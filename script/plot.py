@@ -184,49 +184,68 @@ def hinton(matrix, max_weight=None, ax=None):
 
 def plot_2d_results(data1, data2, labels, title, filename):
     """
-    绘制二维数据的比较图和差值图并保存。
+    绘制二维数据的比较图、差值图，并计算正确的MAPE（先算每个样本误差再平均）。
 
-    :param data1: 第一个二维数据集 (如 xt)
-    :param data2: 第二个二维数据集 (如 x)
+    :param data1: 第一个二维数据集 (如 xt)，shape: [batch_size, H, W]
+    :param data2: 第二个二维数据集 (如 x)，shape: [batch_size, H, W]
     :param labels: 数据集标签
     :param title: 图表标题
     :param filename: 保存的文件名
     """
+    # --------------------------
+    # 修正1：正确计算MAPE（先样本内平均，再样本间平均）
+    # --------------------------
+    with torch.no_grad():
+        # 1. 计算每个样本的绝对误差
+        abs_error = torch.abs(data1 - data2)  # shape: [batch_size, H, W]
+        
+        # 2. 避免除以零（替换接近零的真实值）
+        data2_safe = torch.where(
+            torch.abs(data2) < 1e-10, 
+            torch.ones_like(data2) * 1e-10, 
+            data2
+        )
+        
+        # 3. 计算每个样本的相对误差（百分比）
+        relative_error_per_pixel = (abs_error / data2_safe) * 100  # [batch_size, H, W]
+        
+        # 4. 每个样本的MAPE（所有像素取平均）
+        sample_mape = relative_error_per_pixel.view(relative_error_per_pixel.shape[0], -1).mean(dim=1)  # [batch_size]
+        
+        # 5. 所有样本的平均MAPE（最终结果）
+        overall_mape = sample_mape.mean().item()
+        
+        # 打印误差（保留原格式，新增样本级误差范围）
+        print(f"所有样本的平均MAPE: {overall_mape:.4f}%")
+        print(f"样本误差范围: {sample_mape.min().item():.4f}% ~ {sample_mape.max().item():.4f}%")
+
+    # --------------------------
+    # 可视化部分（保留单样本显示，增加误差标题）
+    # --------------------------
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    # 逐点计算相对误差后取平均
-    relative_errors = abs((data1 - data2).mean() / data2.mean())
-    diff_t = abs((data1 - data2).mean(axis=0))
-    data_t = abs(data2.mean(axis=0))
-    mape = (diff_t.mean()/data_t.mean())*100  # 百分比形式
-
-    print(f"MAPE1: {(diff_t/data_t).mean()*100}%")
-    print(f"MAPE2: {(diff_t.mean()/data_t.mean())*100}%")
-    # print(f"diff:{abs((data1 - data2).mean(axis=0))}")
-    # print(f"diff_mean{abs(data1 - data2).mean()}")
-    # 绘制第一个数据集
-    # im1 = axes[0].imshow(data1.mean(axis=0).cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    # axes[0].set_title(labels[0])
-    # fig.colorbar(im1, ax=axes[0])
-
-    # # 绘制第二个数据集
-    # im2 = axes[1].imshow(data2.mean(axis=0).cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    # axes[1].set_title(labels[1])
-    # fig.colorbar(im2, ax=axes[1])
+    
+    # 1. 绘制第一个数据集（第0个样本）
     im1 = axes[0].imshow(data1[0].cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    axes[0].set_title(labels[0])
+    axes[0].set_title(f"{labels[0]} (样本0)")
     fig.colorbar(im1, ax=axes[0])
-
-    # 绘制第二个数据集
+    
+    # 2. 绘制第二个数据集（第0个样本）
     im2 = axes[1].imshow(data2[0].cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    axes[1].set_title(labels[1])
+    axes[1].set_title(f"{labels[1]} (样本0)")
     fig.colorbar(im2, ax=axes[1])
-    # 计算并绘制差值
+    
+    # 3. 绘制差值图（第0个样本）+ 标注该样本的误差
     diff = (data1 - data2)[0].cpu().detach().numpy()
-    im3 = axes[2].imshow(diff, cmap='seismic', aspect='auto')  # 使用 'seismic' 颜色图来突出差异
-    axes[2].set_title(f"Difference ({labels[0]} - {labels[1]})")
+    im3 = axes[2].imshow(diff, cmap='seismic', aspect='auto')
+    # 标注第0个样本的MAPE
+    axes[2].set_title(
+        f"Difference ({labels[0]} - {labels[1]})\n样本0的MAPE: {sample_mape[0].item():.4f}%"
+    )
     fig.colorbar(im3, ax=axes[2])
-    # 总标题
-    plt.suptitle(title)
+    
+    # 总标题增加整体误差
+    plt.suptitle(f"{title} | 所有样本平均MAPE: {overall_mape:.4f}%", fontsize=16)
+    
     # 保存图像
     plt.savefig(filename, dpi=300)
     plt.close()

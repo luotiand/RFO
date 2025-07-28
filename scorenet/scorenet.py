@@ -316,7 +316,7 @@ class MLP2d_Darcy(nn.Module):
         
         # 主网络 (输入维度调整为3*dim²)
         self.main_net = nn.Sequential(
-            nn.Linear(5, h_dim),  # 新增x特征
+            nn.Linear(4, h_dim),  # 新增x特征
             nn.ReLU(),
             nn.Linear(h_dim, h_dim),
             nn.ReLU(),
@@ -352,10 +352,10 @@ class MLP2d_Darcy(nn.Module):
         
 
         return torch.cat(features, dim=-1)
-    def forward(self, a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+    def forward(self,  x: torch.Tensor, t: torch.Tensor):
         # 输入形状验证
-        assert a.dim() == 3, "输入a应为3维张量"
-        bs, H, W = a.shape
+        assert x.dim() == 3, "输入a应为3维张量"
+        bs, H, W = x.shape
         # import ipdb;ipdb.set_trace()
         # 标准化x
         time_feat = self.generate_time_features(t)
@@ -365,7 +365,6 @@ class MLP2d_Darcy(nn.Module):
         pos_y = self.pos_enc_y.unsqueeze(0).repeat(bs, 1, 1)   
         # 特征融合 (新增x)
         combined = torch.stack([
-            a,    
             x, 
             time_feat,
             pos_x,

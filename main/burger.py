@@ -184,10 +184,15 @@ def main(config):
                 # 应用标准化
                 a_ = (a_ - a_mean) / a_std
                 x_ = (x_ - x_mean) / x_std
+                
+                t = torch.rand(batch_size, 1, device=device).to(dtype=torch.float64)
+                t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
                 opt.zero_grad()
-                score = score_net(a_)
-                # import ipdb;ipdb.set_trace()
-                loss = criterion(score, x_)
+                
+                xt_ = rf.straight_process(a_, x_, t)
+                exact_score = x_ - a_
+                score = score_net(xt_, t)
+                loss = criterion(exact_score, score)
 
                 loss.backward()
                 opt.step()
@@ -197,6 +202,29 @@ def main(config):
                 torch.cuda.empty_cache()
             
             training_loss[it] = loss.item()
+
+            # 记录MAPE
+            if (it + 1) % check_interval == 0 or it == niter - 1:
+                score_net.eval()
+                with torch.no_grad():
+                    xt = [a]
+                    for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
+                        t_tensor = torch.ones(len(xt[0]), 1, device=device) * t_val
+                        score = score_net(xt[-1], t_tensor)
+                        xt_ = rf.forward_process(xt=xt[-1], score=score, dt=rf_dt)
+                        xt.append(xt_)
+                    
+                    # 计算误差前先还原数据
+                    xt_last = xt[-1] * x_std + x_mean  # 还原预测值
+                    x_true = x * x_std + x_mean        # 还原真实值
+                    
+                    mape = calculate_mape(xt_last, x_true)
+                    mape_records.append(mape)
+                    mape_iterations.append(it + 1)
+                    
+                    logging.info(f"Iteration {it + 1}/{niter}, : {mape:.4f}%")
+                
+                score_net.train()
 
             # 学习率衰减
             if (it+1) % (niter//4) == 0:
@@ -215,7 +243,7 @@ def main(config):
                 logging.info(f"Estimated remaining time: {estimated_remaining_time/60:.2f} minutes")
 
         # 保存模型
-        torch.save(score_net.state_dict(), f"{para_path}{model_name}_steps")
+        torch.save(score_net.state_dict(), f"{para_path}{model_name}")
 
         # 绘制训练曲线
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
@@ -232,21 +260,46 @@ def main(config):
         ax2.grid(True)
         ax2.legend()
         
-        plt.savefig(f"{save_path}{scorenet_model_class.lower()}_{target_len}_training_steps.png", dpi=300)
+        plt.savefig(f"{save_path}{scorenet_model_class.lower()}_{target_len}_training_metrics.png", dpi=300)
         plt.close()
 
     # 评估模型
-    score_net.load_state_dict(torch.load(f"{para_path}{model_name}_steps", map_location=device))
+    score_net.load_state_dict(torch.load(f"{para_path}{model_name}", map_location=device))
     score_net.eval()
     import ipdb ;ipdb.set_trace()
     with torch.no_grad():
-        x_pre = score_net(a)
+        xt = [a]
+        for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
+            t = torch.ones(len(xt[0]), 1, device=device) * t_val
+            score = score_net(xt[-1], t)
+            xt_ = rf.forward_process(xt=xt[-1], score=score, dt=rf_dt)
+            xt.append(xt_)
+        yt = [x]
+        for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
+            t = torch.ones(len(xt[0]), 1,device=device) * t_val
+            score = score_net(yt[-1], T - t)
+            yt_ = rf.reverse_process(xt=yt[-1], score=score, dt=rf_dt)
+            yt.append(yt_)
+        # print(T.shape)
+    # 还原数据用于绘图
+    xt_last = xt[-1] * x_std + x_mean  # 还原预测值
+    x_true = x * x_std + x_mean        # 还原真实值
+    yt_last = yt[-1]* a_std+a_mean
+    y_true = a * a_std + a_mean 
+    # 绘制结果（使用还原后的数据）
     plot_1d_results(
-        data1=x_pre,
-        data2=x,
+        data1=xt_last,
+        data2=x_true,
         labels=['xt (2D)', 'x (exact 2D)'],
         title='Operator Learning: xt vs x (2D)',
-        filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_2steps_1d.png'
+        filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_operator_learning_1d.png'
+    )
+    plot_1d_results(
+        data1=yt_last,
+        data2=y_true,
+        labels=['xt (2D)', 'x (exact 2D)'],
+        title='Reverse Learning: xt vs x (2D)',
+        filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_reverse_learning_1d.png'
     )
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

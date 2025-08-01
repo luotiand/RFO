@@ -11,12 +11,12 @@ import time
 import matplotlib.pyplot as plt
 from script.dataset import MyDataset_ns, BurgersDataset, darcyDataset
 from torch.utils.data import DataLoader
-from scorenet.scorenet import MLP1d, MLP2d, CNN, MLP2d_Darcy, CNN_add, CNN_ns, FNO3d, MLP2d_bg, MLP2d_Darcy,GNN_Darcy
+from scorenet.scorenet import  MLP2d_Darcy, CNN_add, CNN_ns,  MLP2d_Darcy,GNN_Darcy
 import argparse
 import logging
 
 
-torch.set_default_dtype(torch.double)
+torch.set_default_dtype(torch.float64)
 torch.backends.cudnn.benchmark = True
 
 def setup_logger(save_path):
@@ -70,7 +70,7 @@ def squared_absolute_error_loss(output, target):
 
 def main(config):
     # 动态设置GPU，优先使用GPU 1，不可用则使用GPU 0
-    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     if device.type == "cpu":
         logging.warning("No GPU available, using CPU mode")
     
@@ -97,7 +97,7 @@ def main(config):
     
     # 加载数据集（不进行标准化）
     train_dataset = darcyDataset('/data5/store1/dlt/rectified_flow/data/piececonst_r421_N1024_smooth1.mat', mode='train',target_size=target_size)
-    test_dataset = darcyDataset('/data5/store1/dlt/rectified_flow/data/piececonst_r421_N1024_smooth2.mat', mode='train',target_size=target_size)
+    test_dataset = darcyDataset('/data5/store1/dlt/rectified_flow/data/piececonst_r421_N1024_smooth2.mat', mode='test',target_size=target_size)
     
     # 创建数据加载器（禁用多线程避免设备问题）
     train_loader = DataLoader(
@@ -141,10 +141,10 @@ def main(config):
     x_mean = x_all.mean()
     x_std = x_all.std() + 1e-6
     
-    logging.info(f"训练集标准化参数: a_mean={a_mean:.6f}, a_std={a_std:.6f}, x_mean={x_mean:.6f}, x_std={x_std:.6f}")
+    logging.info(f" a_mean={a_mean:.6f}, a_std={a_std:.6f}, x_mean={x_mean:.6f}, x_std={x_std:.6f}")
 
     # 动态加载模型类并移至指定设备
-    scorenet_model = globals()[scorenet_model_class](dim = target_size)
+    scorenet_model = globals()[scorenet_model_class](dim = target_size,h_dim = h_dim)
     scorenet_model = scorenet_model.to(device)
     logging.info(f"Model loaded on {device}, class: {scorenet_model_class}")
 
@@ -198,9 +198,8 @@ def main(config):
                 opt.step()
                 
                 # 释放显存
-                del a_, x_, t, xt_, exact_score, score
-                if device.type == "cuda":
-                    torch.cuda.empty_cache()
+                # del a_, x_, t, xt_, exact_score, score
+                # torch.cuda.empty_cache()
             
             training_loss[it] = loss.item()
 
@@ -210,7 +209,7 @@ def main(config):
                 with torch.no_grad():
                     xt = [a]
                     for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
-                        t_tensor = torch.ones(len(xt[0]), 1, 1, device=device) * t_val
+                        t_tensor = torch.ones(len(xt[0]), 1,1, device=device) * t_val
                         score = score_net(xt[-1], t_tensor)
                         xt_ = rf.forward_process(xt=xt[-1], score=score, dt=rf_dt)
                         xt.append(xt_)
@@ -223,61 +222,64 @@ def main(config):
                     mape_records.append(mape)
                     mape_iterations.append(it + 1)
                     
-                    logging.info(f"Iteration {it + 1}/{niter}, MAPE: {mape:.4f}%")
+                    logging.info(f"Iteration {it + 1}/{niter}, : {mape:.4f}%")
                 
                 score_net.train()
 
             # 学习率衰减
             if (it+1) % (niter//4) == 0:
-                new_lr = opt.param_groups[0]['lr'] / 4
-                logging.info(f"LR reduced from {opt.param_groups[0]['lr']} to {new_lr}")
+                new_lr = opt.param_groups[0]['lr'] / 5
+                logging.info(f"Reducing learning rate from {opt.param_groups[0]['lr']} to {new_lr}")
                 opt.param_groups[0]['lr'] = new_lr
 
             # 进度日志
             if (it + 1) % 5 == 0:
                 iter_end_time = time.time()
-                elapsed = iter_end_time - iter_start_time
+                elapsed_time = iter_end_time - iter_start_time
                 iter_start_time = iter_end_time
-                remaining = (niter - it - 1) * (elapsed / 5)
-                logging.info(f"Iter {it+1}/{niter}, Loss: {loss.item():.8f}")
-                logging.info(f"Last 5 iters: {elapsed:.2f}s, Remaining: {remaining/60:.2f}min")
+                estimated_remaining_time = (niter - it - 1) * (elapsed_time / 5)
+                logging.info(f"Iteration {it + 1}/{niter}, Loss: {loss.item():.8f}")
+                logging.info(f"Iteration {it + 1}/{niter}, Loss: {loss.item():.8f}, score:{score.mean()},x-a:{exact_score.mean()}")
+                
+                logging.info(f"Elapsed time for last 5 iterations: {elapsed_time:.2f} seconds")
+                logging.info(f"Estimated remaining time: {estimated_remaining_time/60:.2f} minutes")
 
         # 保存模型
         torch.save(score_net.state_dict(), f"{para_path}{model_name}")
 
         # 绘制训练曲线
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
-        ax1.plot(range(1, niter+1), training_loss, 'b-')
-        ax1.set_ylabel("Loss", fontsize=14)
+        ax1.plot(range(1, niter+1), training_loss, color='blue')
+        ax1.set_ylabel("Training Loss", fontdict={"size": 14})
         ax1.set_yscale("log")
-        ax1.set_title("Training Loss", fontsize=16)
+        ax1.set_title("Rectified Flow Training Loss", fontdict={"size": 16})
         ax1.grid(True)
         
-        ax2.plot(mape_iterations, mape_records, 'r-o', label='Relative Error')
-        ax2.set_xlabel("Iteration", fontsize=14)
-        ax2.set_ylabel("Error (%)", fontsize=14)
-        ax2.set_title("Relative Error", fontsize=16)
+        ax2.plot(mape_iterations, mape_records, 'r-o', label='relative error')
+        ax2.set_xlabel("Iteration", fontdict={"size": 14})
+        ax2.set_ylabel("error (%)", fontdict={"size": 14})
+        ax2.set_title("relative error", fontdict={"size": 16})
         ax2.grid(True)
         ax2.legend()
         
-        plt.savefig(f"{save_path}{scorenet_model_class.lower()}_{target_size}_metrics.png", dpi=300)
+        plt.savefig(f"{save_path}{scorenet_model_class.lower()}_{target_size}_training_metrics.png", dpi=300)
         plt.close()
-
     # 评估模型
-    state_dict = torch.load(f"{para_path}{model_name}", map_location=device)
-    score_net.load_state_dict(state_dict)
+    score_net.load_state_dict(torch.load(f"{para_path}{model_name}", map_location=device))
     score_net.eval()
+    # import ipdb ;ipdb.set_trace()
     with torch.no_grad():
         xt = [a]
-        for t_val in np.arange(0.0, T, rf_dt):
+        for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
             t = torch.ones(len(xt[0]), 1, 1, device=device) * t_val
             score = score_net(xt[-1], t)
+            loss = nn.MSELoss(x-a, score)
             xt_ = rf.forward_process(xt[-1], score, rf_dt)
             xt.append(xt_)
         yt = [x]
         for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
             t = torch.ones(len(xt[0]), 1, 1, device=device) * t_val
-            score = score_net(yt[-1], T - t_val)
+            score = score_net(yt[-1], T - t)
             yt_ = rf.reverse_process(xt=yt[-1], score=score, dt=rf_dt)
             yt.append(yt_)
         # print(T.shape)

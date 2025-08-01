@@ -1,7 +1,7 @@
 import torch
 from script.ode_data import Eq1, WaveEquation, PoissonEquation, HeatEquation
 from rectified.rectified_flow import RectFlow
-from scorenet.scorenet import MLP1d, MLP2d, FNO3d, CNN,MLP2d_add,CNN_add,CNN_ns,MLP2d_bg,MLP2d_Darcy
+from scorenet.scorenet import CNN_add,CNN_ns,MLP2d_burger,MLP2d_Darcy
 # 参数设置
 para_path = "/data5/store1/dlt/rectified_flow/modelpara/"
 save_path = "/data5/store1/dlt/rectified_flow/result/"

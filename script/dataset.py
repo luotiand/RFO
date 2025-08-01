@@ -108,12 +108,8 @@ class BurgersDataset(Dataset):
         y_full = self.outputs[self.indices]  # 形状 [N_test, 201, target_len]
         return x_full, y_full
 
-import torch
-import numpy as np
-from torch.utils.data import Dataset
-
 class darcyDataset(Dataset):
-    def __init__(self, file_path, train_ratio=1.0, mode='train', target_size=None):
+    def __init__(self, file_path, train_ratio=1.0, test_ratio = 0.1,mode='train', target_size=None):
         # 加载原始数据
         reader = MatReader(file_path, to_cuda=False)
         
@@ -132,11 +128,11 @@ class darcyDataset(Dataset):
         total_samples = len(self.inputs)
         indices = np.random.permutation(total_samples)
         split_idx = int(train_ratio * total_samples)
-        
+        test_idx = int(test_ratio * total_samples)
         if mode == 'train':
             self.indices = indices[:split_idx]
         else:
-            self.indices = indices[split_idx:]
+            self.indices = indices[:test_idx]
 
     def downsample_2d(self, x, target_size):
         """

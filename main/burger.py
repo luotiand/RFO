@@ -11,7 +11,7 @@ import time
 import matplotlib.pyplot as plt
 from script.dataset import MyDataset_ns, BurgersDataset
 from torch.utils.data import DataLoader
-from scorenet.scorenet import MLP1d, MLP2d, CNN, MLP2d_ns, CNN_add, CNN_ns, FNO3d, MLP2d_burger
+from scorenet.scorenet import CNN_add, CNN_ns, MLP2d_burger
 import argparse
 import logging
 
@@ -33,23 +33,37 @@ def setup_logger(save_path):
     )
 
 def calculate_mape(pred, true):
-    """计算两种形式的平均绝对百分比误差(MAPE)"""
+    """
+    正确计算MAPE：先计算每个样本的相对误差，再对所有样本取平均
+    
+    Args:
+        pred: 预测值，shape: [batch_size, 特征维度1, 特征维度2, ...]
+        true: 真实值，shape: 与pred一致
+    Returns:
+        所有样本的平均MAPE（百分比）
+    """
     with torch.no_grad():
-        diff_t = abs((pred - true).mean(axis=0))
-        data_t = abs(true.mean(axis=0))
-        mask = data_t > 1e-10
+        # 1. 计算每个样本的绝对误差（保留batch维度）
+        abs_error = torch.abs(pred - true)  # shape: [batch_size, 特征维度1, ...]
         
-        if mask.sum() == 0:
-            mape1 = torch.tensor(0.0)
-        else:
-            mape1 = (diff_t[mask] / data_t[mask]).mean() * 100
+        # 2. 计算每个样本的真实值（保留batch维度）
+        true_abs = torch.abs(true)         # shape: [batch_size, 特征维度1, ...]
         
-        if data_t.mean() < 1e-10:
-            mape2 = torch.tensor(0.0)
-        else:
-            mape2 = (diff_t.mean() / data_t.mean()) * 100
+        # 3. 避免除以零（替换接近零的真实值）
+        true_safe = torch.where(
+            true_abs < 1e-10, 
+            torch.ones_like(true_abs) * 1e-10, 
+            true_abs
+        )
         
-        return mape1.item(), mape2.item()
+        # 4. 计算每个样本的相对误差（百分比）
+        relative_error = (abs_error / true_safe) * 100  # shape: [batch_size, 特征维度1, ...]
+        
+        # 5. 先对每个样本的所有特征取平均（得到单个样本的MAPE），再对所有样本取平均
+        sample_mape = relative_error.view(relative_error.shape[0], -1).mean(dim=1)  # [batch_size]
+        overall_mape = sample_mape.mean()  # 所有样本的平均MAPE
+        
+        return overall_mape.item()
 
 def squared_absolute_error_loss(output, target):
     return torch.mean((torch.abs(output - target)) ** 2)
@@ -154,8 +168,7 @@ def main(config):
         criterion = nn.MSELoss()
 
         training_loss = [None for _ in range(niter)]
-        mape_records1 = []
-        mape_records2 = []
+        mape_records = []
         mape_iterations = []
         
         start_time = time.time()
@@ -171,15 +184,10 @@ def main(config):
                 # 应用标准化
                 a_ = (a_ - a_mean) / a_std
                 x_ = (x_ - x_mean) / x_std
-                
-                t = torch.rand(batch_size, 1, device=device).to(dtype=torch.float64)
-                t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
                 opt.zero_grad()
-                
-                xt_ = rf.straight_process(a_, x_, t)
-                exact_score = x_ - a_
-                score = score_net(a_, xt_, t)
-                loss = criterion(exact_score, score)
+                score = score_net(a_)
+                # import ipdb;ipdb.set_trace()
+                loss = criterion(score, x_)
 
                 loss.backward()
                 opt.step()
@@ -189,30 +197,6 @@ def main(config):
                 torch.cuda.empty_cache()
             
             training_loss[it] = loss.item()
-
-            # 记录MAPE
-            if (it + 1) % check_interval == 0 or it == niter - 1:
-                score_net.eval()
-                with torch.no_grad():
-                    xt = [a]
-                    for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
-                        t_tensor = torch.ones(len(xt[0]), 1, device=device) * t_val
-                        score = score_net(a, xt[-1], t_tensor)
-                        xt_ = rf.forward_process(xt=xt[-1], score=score, dt=rf_dt)
-                        xt.append(xt_)
-                    
-                    # 计算误差前先还原数据
-                    xt_last = xt[-1] * x_std + x_mean  # 还原预测值
-                    x_true = x * x_std + x_mean        # 还原真实值
-                    
-                    mape1, mape2 = calculate_mape(xt_last, x_true)
-                    mape_records1.append(mape1)
-                    mape_records2.append(mape2)
-                    mape_iterations.append(it + 1)
-                    
-                    logging.info(f"Iteration {it + 1}/{niter}, MAPE1: {mape1:.4f}%, MAPE2: {mape2:.4f}%")
-                
-                score_net.train()
 
             # 学习率衰减
             if (it+1) % (niter//4) == 0:
@@ -231,7 +215,7 @@ def main(config):
                 logging.info(f"Estimated remaining time: {estimated_remaining_time/60:.2f} minutes")
 
         # 保存模型
-        torch.save(score_net.state_dict(), f"{para_path}{model_name}")
+        torch.save(score_net.state_dict(), f"{para_path}{model_name}_steps")
 
         # 绘制训练曲线
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
@@ -241,40 +225,29 @@ def main(config):
         ax1.set_title("Rectified Flow Training Loss", fontdict={"size": 16})
         ax1.grid(True)
         
-        ax2.plot(mape_iterations, mape_records2, 'r-o', label='relative error')
+        ax2.plot(mape_iterations, mape_records, 'r-o', label='relative error')
         ax2.set_xlabel("Iteration", fontdict={"size": 14})
         ax2.set_ylabel("error (%)", fontdict={"size": 14})
         ax2.set_title("relative error", fontdict={"size": 16})
         ax2.grid(True)
         ax2.legend()
         
-        plt.savefig(f"{save_path}{scorenet_model_class.lower()}_{target_len}_training_metrics.png", dpi=300)
+        plt.savefig(f"{save_path}{scorenet_model_class.lower()}_{target_len}_training_steps.png", dpi=300)
         plt.close()
 
     # 评估模型
-    score_net.load_state_dict(torch.load(f"{para_path}{model_name}", map_location=device))
+    score_net.load_state_dict(torch.load(f"{para_path}{model_name}_steps", map_location=device))
     score_net.eval()
+    import ipdb ;ipdb.set_trace()
     with torch.no_grad():
-        xt = [a]
-        for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
-            t = torch.ones(len(xt[0]), 1, device=device) * t_val
-            score = score_net(a, xt[-1], t)
-            xt_ = rf.forward_process(xt=xt[-1], score=score, dt=rf_dt)
-            xt.append(xt_)
-    
-    # 还原数据用于绘图
-    xt_last = xt[-1] * x_std + x_mean  # 还原预测值
-    x_true = x * x_std + x_mean        # 还原真实值
-    
-    # 绘制结果（使用还原后的数据）
+        x_pre = score_net(a)
     plot_1d_results(
-        data1=xt_last,
-        data2=x_true,
+        data1=x_pre,
+        data2=x,
         labels=['xt (2D)', 'x (exact 2D)'],
         title='Operator Learning: xt vs x (2D)',
-        filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_operator_learning_1d.png'
+        filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_2steps_1d.png'
     )
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('config', type=str, help='Path to the configuration file')

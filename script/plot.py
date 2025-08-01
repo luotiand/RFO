@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-
+import torch
 def plot_3d_compare_with_diff(data1, data2, titles, cmap_main='viridis', cmap_diff='seismic', 
                              elev=25, azim=-135, filename='operator_learning_3d.png' ,figsize=(24, 8)):
     """
@@ -198,12 +198,12 @@ def plot_2d_results(data1, data2, labels, title, filename):
     with torch.no_grad():
         # 1. 计算每个样本的绝对误差
         abs_error = torch.abs(data1 - data2)  # shape: [batch_size, H, W]
-        
+        abs_true = torch.abs(data2)
         # 2. 避免除以零（替换接近零的真实值）
         data2_safe = torch.where(
-            torch.abs(data2) < 1e-10, 
-            torch.ones_like(data2) * 1e-10, 
-            data2
+            abs_true < 1e-10, 
+            torch.ones_like(abs_true) * 1e-10, 
+            abs_true
         )
         
         # 3. 计算每个样本的相对误差（百分比）
@@ -214,7 +214,8 @@ def plot_2d_results(data1, data2, labels, title, filename):
         
         # 5. 所有样本的平均MAPE（最终结果）
         overall_mape = sample_mape.mean().item()
-        
+        min_mape_idx = torch.argmin(sample_mape).item()
+        min_mape_value = sample_mape[min_mape_idx].item()
         # 打印误差（保留原格式，新增样本级误差范围）
         print(f"所有样本的平均MAPE: {overall_mape:.4f}%")
         print(f"样本误差范围: {sample_mape.min().item():.4f}% ~ {sample_mape.max().item():.4f}%")
@@ -225,26 +226,26 @@ def plot_2d_results(data1, data2, labels, title, filename):
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
     # 1. 绘制第一个数据集（第0个样本）
-    im1 = axes[0].imshow(data1[0].cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    axes[0].set_title(f"{labels[0]} (样本0)")
+    im1 = axes[0].imshow(data1[min_mape_idx].cpu().detach().numpy(), cmap='viridis', aspect='auto')
+    axes[0].set_title(f"{labels[0]} (pred)")
     fig.colorbar(im1, ax=axes[0])
     
     # 2. 绘制第二个数据集（第0个样本）
-    im2 = axes[1].imshow(data2[0].cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    axes[1].set_title(f"{labels[1]} (样本0)")
+    im2 = axes[1].imshow(data2[min_mape_idx].cpu().detach().numpy(), cmap='viridis', aspect='auto')
+    axes[1].set_title(f"{labels[1]} (true)")
     fig.colorbar(im2, ax=axes[1])
     
     # 3. 绘制差值图（第0个样本）+ 标注该样本的误差
-    diff = (data1 - data2)[0].cpu().detach().numpy()
+    diff = (data1 - data2)[min_mape_idx].cpu().detach().numpy()
     im3 = axes[2].imshow(diff, cmap='seismic', aspect='auto')
     # 标注第0个样本的MAPE
     axes[2].set_title(
-        f"Difference ({labels[0]} - {labels[1]})\n样本0的MAPE: {sample_mape[0].item():.4f}%"
+        f"Difference ({labels[0]} - {labels[1]})\nMAPE: {sample_mape[0].item():.4f}%"
     )
     fig.colorbar(im3, ax=axes[2])
     
     # 总标题增加整体误差
-    plt.suptitle(f"{title} | 所有样本平均MAPE: {overall_mape:.4f}%", fontsize=16)
+    plt.suptitle(f"{title} | MAPE: {min_mape_value:.4f}%", fontsize=16)
     
     # 保存图像
     plt.savefig(filename, dpi=300)
@@ -252,7 +253,7 @@ def plot_2d_results(data1, data2, labels, title, filename):
 
 def plot_1d_results(data1, data2, labels, title, filename):
     """
-    绘制一维数据的比较图和差值图并保存。
+    绘制一维数据的比较图和差值图并保存，选择误差最小的样本进行展示。
 
     :param data1: 第一个一维数据集 (shape: [batch_size, d])
     :param data2: 第二个一维数据集 (shape: [batch_size, d])
@@ -261,41 +262,49 @@ def plot_1d_results(data1, data2, labels, title, filename):
     :param filename: 保存的文件名
     """
     # 计算批处理维度的平均值，得到一维数组
-    data1_mean = data1.mean(dim=0).cpu().detach().numpy()
-    data2_mean = data2.mean(dim=0).cpu().detach().numpy()
-    diff_t = abs(data1_mean - data2_mean)
-    data_t = abs(data2_mean)
-    # 计算相对误差
-    relative_errors = abs((data1_mean - data2_mean) / data2_mean)
-    mape = (diff_t.mean()/data_t.mean())*100  # 百分比形式
-    
-    # 计算两种形式的MAPE
-    diff_t = abs(data1_mean - data2_mean)
-    data_t = abs(data2_mean)
-    print(f"MAPE1: {(diff_t/data_t).mean()*100:.4f}%")
-    print(f"MAPE2: {(diff_t.mean()/data_t.mean())*100:.4f}%")
+    with torch.no_grad():
+        # 1. 计算每个样本的绝对误差
+        abs_error = torch.abs(data1 - data2)  # shape: [batch_size, H]
+        abs_true = torch.abs(data2)
+        data2_safe = torch.where(
+            torch.abs(abs_true) < 1e-10, 
+            torch.ones_like(abs_true) * 1e-10, 
+            abs_true
+        )
+        relative_error_per_pixel = (abs_error / data2_safe) * 100  # [batch_size, H]
+        sample_mape = relative_error_per_pixel.view(relative_error_per_pixel.shape[0], -1).mean(dim=1)  # [batch_size]
+        overall_mape = sample_mape.mean().item()
+        
+        # 2. 找到误差最小的样本索引
+        min_mape_idx = torch.argmin(sample_mape).item()
+        min_mape_value = sample_mape[min_mape_idx].item()
+        
+        print(f"所有样本的平均MAPE: {overall_mape:.4f}%")
+        print(f"样本误差范围: {sample_mape.min().item():.4f}% ~ {sample_mape.max().item():.4f}%")
+        print(f"误差最小的样本索引: {min_mape_idx}, MAPE: {min_mape_value:.4f}%")
     
     # 创建图表
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
+    # 3. 绘制误差最小的样本
     # 绘制第一个数据集
-    axes[0].plot(data1_mean)
+    axes[0].plot(data1[min_mape_idx].cpu().detach().numpy())
     axes[0].set_title(labels[0])
     axes[0].grid(True)
     
     # 绘制第二个数据集
-    axes[1].plot(data2_mean)
+    axes[1].plot(data2[min_mape_idx].cpu().detach().numpy())
     axes[1].set_title(labels[1])
     axes[1].grid(True)
     
     # 计算并绘制差值
-    diff = data1_mean - data2_mean
+    diff = data1[min_mape_idx].cpu().detach().numpy() - data2[min_mape_idx].cpu().detach().numpy()
     axes[2].plot(diff)
     axes[2].set_title(f"Difference ({labels[0]} - {labels[1]})")
     axes[2].grid(True)
     
     # 添加相对误差信息到标题
-    plt.suptitle(f"{title} (MAPE: {mape:.2f}%)")
+    plt.suptitle(f"{title} (MAPE: {min_mape_value:.2f}%")
     
     # 调整布局
     plt.tight_layout(rect=[0, 0, 1, 0.96])  # 为suptitle留出空间

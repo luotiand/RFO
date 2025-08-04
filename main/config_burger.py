@@ -15,11 +15,11 @@ T = 1.0
 eq_dt = 0.01
 rf_dt = 0.1
 h_dim = 2048
-train = 1
+train = 0
 rf = RectFlow()
 eq = PoissonEquation()
 # 模型相关
-scorenet_model_class = "MLP2d_burger"  #  "MLP1d", "MLP2d", "FNO", "CNN"
+scorenet_model_class = "FNO1d"  #  "MLP1d", "MLP2d", "FNO", "CNN"
 
 # GPU 设置
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

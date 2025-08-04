@@ -250,87 +250,91 @@ def plot_2d_results(data1, data2, labels, title, filename):
     # 保存图像
     plt.savefig(filename, dpi=300)
     plt.close()
-
 def plot_1d_results(data1, data2, labels, title, filename):
     """
-    绘制一维数据的比较图和差值图并保存，选择误差最小的样本进行展示。
-
-    :param data1: 第一个一维数据集 (shape: [batch_size, d])
-    :param data2: 第二个一维数据集 (shape: [batch_size, d])
-    :param labels: 数据集标签
-    :param title: 图表标题
-    :param filename: 保存的文件名
+    绘制一维数据的比较图和差值图并保存，标题同时显示整体平均和当前样本的L2相对误差
     """
-    # 计算批处理维度的平均值，得到一维数组
     with torch.no_grad():
-        # 1. 计算每个样本的绝对误差
-        abs_error = torch.abs(data1 - data2)  # shape: [batch_size, H]
-        abs_true = torch.abs(data2)
-        data2_safe = torch.where(
-            torch.abs(abs_true) < 1e-10, 
-            torch.ones_like(abs_true) * 1e-10, 
-            abs_true
+        # 计算每个样本的L2相对误差
+        batch_size = data1.shape[0]
+        data1_flat = data1.view(batch_size, -1)
+        data2_flat = data2.view(batch_size, -1)
+        
+        # 分子：预测与真实的L2范数差
+        diff_norm = torch.norm(data1_flat - data2_flat, p=2, dim=1)
+        # 分母：真实值的L2范数（添加小值保护）
+        data2_norm = torch.norm(data2_flat, p=2, dim=1)
+        data2_norm_safe = torch.where(
+            data2_norm < 1e-10, 
+            torch.ones_like(data2_norm) * 1e-10, 
+            data2_norm
         )
-        relative_error_per_pixel = (abs_error / data2_safe) * 100  # [batch_size, H]
-        sample_mape = relative_error_per_pixel.view(relative_error_per_pixel.shape[0], -1).mean(dim=1)  # [batch_size]
-        overall_mape = sample_mape.mean().item()
         
-        # 2. 找到误差最小的样本索引
-        min_mape_idx = torch.argmin(sample_mape).item()
-        min_mape_value = sample_mape[min_mape_idx].item()
+        # 样本级和整体L2相对误差
+        sample_l2_rel = diff_norm / data2_norm_safe
+        overall_l2_rel = sample_l2_rel.mean().item()  # 整体平均L2误差
         
-        print(f"所有样本的平均MAPE: {overall_mape:.4f}%")
-        print(f"样本误差范围: {sample_mape.min().item():.4f}% ~ {sample_mape.max().item():.4f}%")
-        print(f"误差最小的样本索引: {min_mape_idx}, MAPE: {min_mape_value:.4f}%")
+        # 找到L2相对误差最小的样本
+        min_l2_idx = torch.argmin(sample_l2_rel).item()
+        current_sample_l2 = sample_l2_rel[min_l2_idx].item()  # 当前展示样本的L2误差
+        
+        # 打印误差信息
+        print(f"所有样本的平均L2相对误差: {overall_l2_rel:.6f}")
+        print(f"当前展示样本的L2相对误差: {current_sample_l2:.6f}")
+        print(f"样本L2相对误差范围: {sample_l2_rel.min().item():.6f} ~ {sample_l2_rel.max().item():.6f}")
     
     # 创建图表
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
-    # 3. 绘制误差最小的样本
-    # 绘制第一个数据集
-    axes[0].plot(data1[min_mape_idx].cpu().detach().numpy())
+    # 绘制误差最小的样本
+    axes[0].plot(data1[min_l2_idx].cpu().detach().numpy())
     axes[0].set_title(labels[0])
     axes[0].grid(True)
     
-    # 绘制第二个数据集
-    axes[1].plot(data2[min_mape_idx].cpu().detach().numpy())
+    axes[1].plot(data2[min_l2_idx].cpu().detach().numpy())
     axes[1].set_title(labels[1])
     axes[1].grid(True)
     
-    # 计算并绘制差值
-    diff = data1[min_mape_idx].cpu().detach().numpy() - data2[min_mape_idx].cpu().detach().numpy()
+    # 绘制差值
+    diff = data1[min_l2_idx].cpu().detach().numpy() - data2[min_l2_idx].cpu().detach().numpy()
     axes[2].plot(diff)
     axes[2].set_title(f"Difference ({labels[0]} - {labels[1]})")
     axes[2].grid(True)
     
-    # 添加相对误差信息到标题
-    plt.suptitle(f"{title} (MAPE: {min_mape_value:.2f}%")
+    # 标题同时显示整体平均和当前样本的L2误差
+    plt.suptitle(
+        f"{title}\n"
+        f"overall_L2error: {overall_l2_rel:.6f} | "
+        f"L2error: {current_sample_l2:.6f}"
+    )
     
-    # 调整布局
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # 为suptitle留出空间
-    
-    # 保存图像
+    plt.tight_layout(rect=[0, 0, 1, 0.94])  # 调整布局容纳两行标题
     plt.savefig(filename, dpi=300)
     plt.close()
+
+
 def plot_results(data1, data2, labels, title, xlabel, ylabel, filename):
     """
-    绘制数据的比较图并保存。
-
-    :param data1: 第一个数据集
-    :param data2: 第二个数据集
-    :param labels: 数据集标签
-    :param title: 图表标题
-    :param xlabel: x 轴标签
-    :param ylabel: y 轴标签
-    :param filename: 保存的文件名
+    绘制数据比较图，标题同时显示整体平均L2相对误差
     """
+    with torch.no_grad():
+        # 计算整体L2相对误差
+        data1_flat = data1.view(data1.shape[0], -1)
+        data2_flat = data2.view(data2.shape[0], -1)
+        diff_norm = torch.norm(data1_flat - data2_flat, p=2, dim=1)
+        data2_norm = torch.norm(data2_flat, p=2, dim=1)
+        data2_norm_safe = torch.where(data2_norm < 1e-10, torch.ones_like(data2_norm)*1e-10, data2_norm)
+        overall_l2_rel = (diff_norm / data2_norm_safe).mean().item()
+    
     plt.figure()
     plt.plot(data1.mean(dim=1).cpu().detach().numpy(), label=labels[0].format(len(data1)))
     plt.plot(data2.mean(dim=1).cpu().detach().numpy(), label=labels[1].format(len(data2)))
     
-    plt.title(title)
+    # 标题添加整体平均L2误差
+    plt.title(f"{title}\noverral_L2error: {overall_l2_rel:.6f}")
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.legend()
+    plt.tight_layout(rect=[0, 0, 1, 0.94])  # 为两行标题留空间
     plt.savefig(filename, dpi=300)
     plt.close()

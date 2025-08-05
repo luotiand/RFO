@@ -1,22 +1,36 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-import os
 import subprocess
 from script.plot import plot_2d_results, plot_results, hinton, plot_3d_compare_with_diff
 from script.ode_data import Eq1, WaveEquation, PoissonEquation, HeatEquation
 from rectified.rectified_flow import RectFlow
 import time
 import matplotlib.pyplot as plt
-from script.dataset import MyDataset_ns
+from script.dataset import MyDataset_ns, BurgersDataset, darcyDataset
 from torch.utils.data import DataLoader
-from scorenet.scorenet import MLP1d, MLP2d, CNN, MLP2d_ns, CNN_add, CNN_ns, FNO3d
+# from scorenet.scorenet import  MLP2d_Darcy, CNN_add, CNN_ns,  MLP2d_Darcy,GNN_Darcy
+from scorenet.FNO3d import FNO3d
 import argparse
 import logging
+from Adam import Adam
+from utilities3 import *
 
-torch.set_default_dtype(torch.double)
+import operator
+from functools import reduce
+from functools import partial
+
+from timeit import default_timer
+
+
+
+torch.manual_seed(0)
+np.random.seed(0)
+torch.set_default_dtype(torch.float32)
 torch.backends.cudnn.benchmark = True
+
 
 def setup_logger(save_path):
     """配置日志记录器"""
@@ -31,46 +45,33 @@ def setup_logger(save_path):
             logging.StreamHandler()
         ]
     )
-
-def calculate_mape(pred, true):
-    """计算两种形式的平均绝对百分比误差(MAPE)"""
+def calculate_metrics(pred, true):
     with torch.no_grad():
-        # 先对批次维度求平均
-        diff_t = abs((pred - true).mean(axis=0))
-        data_t = abs(true.mean(axis=0))
-        
-        # 避免除以零
-        mask = data_t > 1e-10
-        
-        # MAPE1: 每个位置计算相对误差，然后求平均
-        if mask.sum() == 0:
-            mape1 = torch.tensor(0.0)
-        else:
-            mape1 = (diff_t[mask] / data_t[mask]).mean() * 100
-        
-        # MAPE2: 先求平均差异和平均真值，再计算相对误差
-        if data_t.mean() < 1e-10:
-            mape2 = torch.tensor(0.0)
-        else:
-            mape2 = (diff_t.mean() / data_t.mean()) * 100
-        
-        return mape1.item(), mape2.item()
-
+        # 只计算L2相对误差（用于评估）
+        lp_loss = LpLoss(p=2, reduction='mean')
+        l2_rel = lp_loss(pred, true, mode='rel')
+        return l2_rel.item()
 def squared_absolute_error_loss(output, target):
     return torch.mean((torch.abs(output - target)) ** 2)
-
+################################################################
+# configs
+################################################################
 def main(config):
-    # 从配置字典中提取参数
+    # 动态设置GPU，优先使用GPU 1，不可用则使用GPU 0
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    if device.type == "cpu":
+        logging.warning("No GPU available, using CPU mode")
+    
     save_path = config['save_path']
     para_path = config['para_path']
     setup_logger(save_path)
-    logging.info("Initializing training process...")
+    logging.info(f"Training device: {device}")
+    
     eq_T = config['eq_T']
     N = config['N']
     niter = config['niter']
     lr = config['lr']
     batch_size = config['batch_size']
-    T = config['T']
     eq_dt = config['eq_dt']
     rf_dt = config['rf_dt']
     h_dim = config['h_dim']
@@ -79,203 +80,163 @@ def main(config):
     model_name = config['model_name']
     rf = config['rf']
     eq = config['eq']
-    
-    # 强制使用CUDA 0
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-    logging.info(f"Using device: {device}")
-    
-    # 加载数据集
-    train_dataset = MyDataset_ns(
-        file_path='/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat',
-        input_steps=10,
-        pred_steps=10,
-        train=True
-    )
-    
-    test_dataset = MyDataset_ns(
-        file_path='/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat',
-        input_steps=10,
-        pred_steps=10,
-        train=False
-    )
-    logging.info(f"Training dataset size: {len(train_dataset)}")
-    logging.info(f"Test dataset size: {len(test_dataset)}")
-    dataloader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=True
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=True
-    )
-    
-    # 动态加载模型类并移至设备
-    scorenet_model = globals()[scorenet_model_class]()
-    scorenet_model = scorenet_model.to(device)
-    logging.info(f"Model file will be saved as: {model_name}")
-    logging.info(f"Model architecture: {scorenet_model}")
+    # target_size=config['target_size']
+    TRAIN_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat'
+    TEST_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat'
 
-    # 初始化数据并移至设备
-    sample_a, sample_x = test_dataset.get_full_data()
-    a = sample_a.to(device).to(dtype=torch.float64)
-    x = sample_x.to(device).to(dtype=torch.float64)
+    ntrain = 1000
+    ntest = 200
 
-    # 确保模型在单GPU上运行
-    score_net = scorenet_model
-    logging.info("Using single GPU (CUDA:0) for computation")
+    modes = 8
+    width = 20
 
-    if train:
-        opt = optim.Adam(params=score_net.parameters(), lr=lr, betas=(0.5, 0.999))
-        criterion = nn.MSELoss()
+    batch_size = 10
+    batch_size2 = batch_size
 
-        # 训练
-        training_loss = [None for _ in range(niter)]
-        mape_records1 = []
-        mape_records2 = []
-        mape_iterations = []
-        
-        start_time = time.time()
-        iter_start_time = start_time
-        check_interval = max(1, niter // 10)
+    epochs = 500
+    learning_rate = lr
+    scheduler_step = 100
+    scheduler_gamma = 0.5
 
-        for it in range(niter):
-            for a_, x_ in dataloader:
-                # 确保数据移至指定设备
-                a_ = a_.to(device).to(dtype=torch.float64)
-                x_ = x_.to(device).to(dtype=torch.float64)
+    print(epochs, learning_rate, scheduler_step, scheduler_gamma)
 
-                t = torch.rand(batch_size, 1).to(device).to(dtype=torch.float64)
-                t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
-                opt.zero_grad()
-                xt_ = rf.straight_process(a_, x_, t)
-                exact_score = x_ - a_
-                
-                # 前向传播
-                score = score_net(a_, xt_, t)
-                loss = criterion(exact_score, score)
 
-                loss.backward()
-                opt.step()
-                
-                # 释放显存
-                del a_, x_, t, xt_, exact_score, score
-                torch.cuda.empty_cache()
-            
-            training_loss[it] = loss.item()
+    runtime = np.zeros(2, )
+    t1 = default_timer()
 
-            # 每经过10%的迭代，计算并记录MAPE
-            if (it + 1) % check_interval == 0 or it == niter - 1:
-                score_net.eval()
-                with torch.no_grad():
-                    # 生成预测结果并确保在正确设备
-                    xt = [a]
-                    for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
-                        t_tensor = torch.ones(len(xt[0]), 1, 1, 1, device=device) * t_val
-                        score = score_net(a, xt[-1], t_tensor)
-                        xt_ = rf.forward_process(xt=xt[-1], score=score, dt=rf_dt)
+
+    sub = 1
+    S = 64 // sub
+    T_in = 10
+    T = 40
+
+    ################################################################
+    # load data
+    ################################################################
+
+    reader = MatReader(TRAIN_PATH)
+    train_a = reader.read_field('u')[:ntrain,::sub,::sub,:T_in]
+    train_u = reader.read_field('u')[:ntrain,::sub,::sub,T_in:T+T_in]
+
+    reader = MatReader(TEST_PATH)
+    test_a = reader.read_field('u')[-ntest:,::sub,::sub,:T_in]
+    test_u = reader.read_field('u')[-ntest:,::sub,::sub,T_in:T+T_in]
+
+    print(train_u.shape)
+    print(test_u.shape)
+    assert (S == train_u.shape[-2])
+    assert (T == train_u.shape[-1])
+
+
+    a_normalizer = UnitGaussianNormalizer(train_a)
+    train_a = a_normalizer.encode(train_a)
+    test_a = a_normalizer.encode(test_a)
+
+    y_normalizer = UnitGaussianNormalizer(train_u)
+    train_u = y_normalizer.encode(train_u)
+
+    train_a = train_a.reshape(ntrain,S,S,1,T_in).repeat([1,1,1,T,1])
+    test_a = test_a.reshape(ntest,S,S,1,T_in).repeat([1,1,1,T,1])
+
+    train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=batch_size, shuffle=False)
+
+    t2 = default_timer()
+
+    print('preprocessing finished, time used:', t2-t1)
+    device = torch.device('cuda')
+
+    ################################################################
+    # training and evaluation
+    ################################################################
+    model = FNO3d(modes, modes, modes, width).cuda()
+    # model = torch.load('model/ns_fourier_V100_N1000_ep100_m8_w20')
+
+    print(count_params(model))
+    optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=scheduler_step, gamma=scheduler_gamma)
+
+
+    myloss = LpLoss(size_average=False)
+    y_normalizer.cuda()
+    for ep in range(epochs):
+        model.train()
+        t1 = default_timer()
+        train_mse = 0
+        train_l2 = 0
+        for x, y in train_loader:
+            x, y = x.cuda(), y.cuda()
+            t = torch.rand(batch_size, 1, device=device).to(dtype=torch.float32)
+            t = t.view(batch_size, *([1] * (len(x.shape) - 1)))
+            t = t.repeat(1, S,S,1,T,T_in)
+            optimizer.zero_grad()
+            out = model(x,t).view(batch_size, S, S, T)
+            # mse.backward()
+
+            y = y_normalizer.decode(y)
+            x = a_normalizer.decode(x)
+            out = y_normalizer.decode(out)
+            l2 = myloss(out.view(batch_size, -1), (y-x).view(batch_size, -1))
+            l2.backward()
+
+            optimizer.step()
+            train_l2 += l2.item()
+
+        scheduler.step()
+        if ep//5 == 0:
+            model.eval()
+            test_l2 = 0.0
+            with torch.no_grad():
+                for x, y in test_loader:
+                    x, y = x.cuda(), y.cuda()
+                    for t_val in np.arange(0.0, 1, rf_dt):
+                        t = torch.ones(batch_size, 1, device=device).to(dtype=torch.float32)
+                        t = t.view(batch_size, *([1] * (len(x.shape) - 1)))
+                        t = t.repeat(1, S,S,1,T,T_in)
+                        score = model(xt[-1], t_tensor)
+                        xt_ = rf.forward_process(xt[-1], score, dt=rf_dt)
                         xt.append(xt_)
-                    
-                    # 计算两种MAPE
-                    mape1, mape2 = calculate_mape(xt[-1], x)
-                    mape_records1.append(mape1)
-                    mape_records2.append(mape2)
-                    mape_iterations.append(it + 1)
-                    
-                    logging.info(f"Iteration {it + 1}/{niter}, MAPE1: {mape1:.4f}%, MAPE2: {mape2:.4f}%")
-                
-                score_net.train()
+                    out = y_normalizer.decode(xt[-1].view(batch_size, S, S, T))
+                    test_l2 += myloss(out.view(batch_size, -1), y.view(batch_size, -1)).item()
 
-            if (it+1) % (niter//4) == 0:
-                new_lr = opt.param_groups[0]['lr'] / 4
-                logging.info(f"Reducing learning rate from {opt.param_groups[0]['lr']} to {new_lr}")
-                opt.param_groups[0]['lr'] = new_lr
+            train_l2 /= ntrain
+            test_l2 /= ntest
 
-            if (it + 1) % 5 == 0:
-                iter_end_time = time.time()
-                elapsed_time = iter_end_time - iter_start_time
-                iter_start_time = iter_end_time
-                estimated_remaining_time = (niter - it - 1) * (elapsed_time / 5)
-                logging.info(f"Iteration {it + 1}/{niter}, Loss: {loss.item():.8f}")
-                logging.info(f"Elapsed time for last 5 iterations: {elapsed_time:.2f} seconds")
-                logging.info(f"Estimated remaining time: {estimated_remaining_time/60:.2f} minutes")
+            t2 = default_timer()
+            print(ep, t2-t1, train_l2, test_l2)
+    torch.save(score_net.state_dict(), f"{para_path}{model_name}")
 
-        torch.save(score_net.state_dict(), f"{para_path}{model_name}")
 
-        # 绘制损失曲线和MAPE曲线
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
-        fig.set_tight_layout(True)
-        
-        ax1.plot(range(1, niter+1), training_loss, color='blue')
-        ax1.set_ylabel("Training Loss", fontdict={"size": 14})
-        ax1.set_yscale("log")
-        ax1.set_title("Rectified Flow Training Loss", fontdict={"size": 16})
-        ax1.grid(True)
-        
-        ax2.plot(mape_iterations, mape_records2, 'r-o', label='relative error')
-        ax2.set_xlabel("Iteration", fontdict={"size": 14})
-        ax2.set_ylabel("error (%)", fontdict={"size": 14})
-        ax2.set_title("relative error", fontdict={"size": 16})
-        ax2.grid(True)
-        ax2.legend()
-        
-        plt.savefig(f"{save_path}{scorenet_model_class.lower()}_training_metrics.png", dpi=300)
-        plt.close()
-
-    # 加载模型并确保在正确设备
-    state_dict = torch.load(f"{para_path}{model_name}", map_location=device)
-    score_net.load_state_dict(state_dict)
-    score_net.eval()
-    
+    pred = torch.zeros(test_u.shape)
+    index = 0
+    test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
     with torch.no_grad():
-        # 评估 Operator Learning 和逆问题
-        xt = [a]
-        for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
-            t = torch.ones(len(xt[0]), 1, 1, 1, device=device) * t_val
-            # print(t.shape)
-            score = score_net(a, xt[-1], t)
-            xt_ = rf.forward_process(xt=xt[-1], score=score, dt=rf_dt)
-            xt.append(xt_)
-        # print(1)
-        # print('\n')
-        # yt = [x]
-        # for t_val in np.arange(start=0.0, stop=T, step=rf_dt):
-        #     t = torch.ones(len(xt[0]), 1, 1, 1, device=device) * t_val
-        #     score = score_net(x, yt[-1], T - t_val)
-        #     yt_ = rf.reverse_process(xt=yt[-1], score=score, dt=rf_dt)
-        #     yt.append(yt_)
-        # print(T.shape)
-    # 绘制结果
-    plot_2d_results(
-        data1=xt[-1][100].cpu(),
-        data2=x[100].cpu(),
-        labels=['xt (2D)', 'x (exact 2D)'],
-        title='Operator Learning: xt vs x (2D)',
-        filename=f'{save_path}{scorenet_model_class.lower()}_operator_learning_2d.png'
-    )
-    # plot_3d_compare_with_diff(
-    #     data1=xt[-1].cpu().detach().numpy(), 
-    #     data2=x.cpu().detach().numpy(),
-    #     titles='Operator Learning: xt vs x (3D)',
-    #     cmap_main='plasma',
-    #     cmap_diff='coolwarm',
-    #     elev=40,
-    #     azim=-90,
-    #     filename=f'{save_path}{scorenet_model_class.lower()}_operator_learning_3d.png'       
-    # )
+        for x, y in test_loader:
+            test_l2 = 0
+            x, y = x.cuda(), y.cuda()
+            for t_val in np.arange(0.0, 1, rf_dt):
+                t = torch.ones(batch_size, 1, device=device).to(dtype=torch.float32)
+                t = t.view(batch_size, *([1] * (len(x.shape) - 1)))
+                t = t.repeat(1, S,S,1,T,T_in)
+                score = model(xt[-1], t_tensor)
+                xt_ = rf.forward_process(xt[-1], score, dt=rf_dt)
+                xt.append(xt_)
+            out = y_normalizer.decode(xt[-1].view(batch_size, S, S, T))
+            pred[index] = out
+
+            test_l2 += myloss(out.view(1, -1), y.view(1, -1)).item()
+            print(index, test_l2)
+            index = index + 1
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('config', type=str, help='Path to the configuration file')
+    parser.add_argument('config', type=str, help='Path to configuration file')
     args = parser.parse_args()
-
-    # 动态加载配置文件
-    config_path = args.config
+    
     config = {}
-    with open(config_path, 'r') as f:
+    with open(args.config, 'r') as f:
         exec(f.read(), config)
-
+    
     main(config)
+
+

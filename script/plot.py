@@ -184,70 +184,69 @@ def hinton(matrix, max_weight=None, ax=None):
 
 def plot_2d_results(data1, data2, labels, title, filename):
     """
-    绘制二维数据的比较图、差值图，并计算正确的MAPE（先算每个样本误差再平均）。
-
-    :param data1: 第一个二维数据集 (如 xt)，shape: [batch_size, H, W]
-    :param data2: 第二个二维数据集 (如 x)，shape: [batch_size, H, W]
-    :param labels: 数据集标签
-    :param title: 图表标题
-    :param filename: 保存的文件名
+    绘制二维数据的比较图、差值图，基于L2相对误差选择样本
+    标题同时显示整体平均和当前样本的L2相对误差
     """
-    # --------------------------
-    # 修正1：正确计算MAPE（先样本内平均，再样本间平均）
-    # --------------------------
     with torch.no_grad():
-        # 1. 计算每个样本的绝对误差
-        abs_error = torch.abs(data1 - data2)  # shape: [batch_size, H, W]
-        abs_true = torch.abs(data2)
-        # 2. 避免除以零（替换接近零的真实值）
-        data2_safe = torch.where(
-            abs_true < 1e-10, 
-            torch.ones_like(abs_true) * 1e-10, 
-            abs_true
+        # 计算每个样本的L2相对误差（与1D逻辑一致）
+        batch_size = data1.shape[0]
+        data1_flat = data1.view(batch_size, -1)  # 展平为(batch, H*W)
+        data2_flat = data2.view(batch_size, -1)
+        
+        # 分子：预测与真实的L2范数差
+        diff_norm = torch.norm(data1_flat - data2_flat, p=2, dim=1)
+        # 分母：真实值的L2范数（添加小值保护）
+        data2_norm = torch.norm(data2_flat, p=2, dim=1)
+        data2_norm_safe = torch.where(
+            data2_norm < 1e-10, 
+            torch.ones_like(data2_norm) * 1e-10, 
+            data2_norm
         )
         
-        # 3. 计算每个样本的相对误差（百分比）
-        relative_error_per_pixel = (abs_error / data2_safe) * 100  # [batch_size, H, W]
+        # 样本级和整体L2相对误差
+        sample_l2_rel = diff_norm / data2_norm_safe
+        overall_l2_rel = sample_l2_rel.mean().item()  # 整体平均L2误差
         
-        # 4. 每个样本的MAPE（所有像素取平均）
-        sample_mape = relative_error_per_pixel.view(relative_error_per_pixel.shape[0], -1).mean(dim=1)  # [batch_size]
+        # 找到L2相对误差最小的样本（用于可视化）
+        min_l2_idx = torch.argmin(sample_l2_rel).item()
+        current_sample_l2 = sample_l2_rel[min_l2_idx].item()  # 当前展示样本的L2误差
         
-        # 5. 所有样本的平均MAPE（最终结果）
-        overall_mape = sample_mape.mean().item()
-        min_mape_idx = torch.argmin(sample_mape).item()
-        min_mape_value = sample_mape[min_mape_idx].item()
-        # 打印误差（保留原格式，新增样本级误差范围）
-        print(f"所有样本的平均MAPE: {overall_mape:.4f}%")
-        print(f"样本误差范围: {sample_mape.min().item():.4f}% ~ {sample_mape.max().item():.4f}%")
+        # 打印误差信息（与1D函数风格统一）
+        print(f"所有样本的平均L2相对误差: {overall_l2_rel:.6f}")
+        print(f"当前展示样本的L2相对误差: {current_sample_l2:.6f}")
+        print(f"样本L2相对误差范围: {sample_l2_rel.min().item():.6f} ~ {sample_l2_rel.max().item():.6f}")
 
-    # --------------------------
-    # 可视化部分（保留单样本显示，增加误差标题）
-    # --------------------------
+    # 可视化部分
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
-    # 1. 绘制第一个数据集（第0个样本）
-    im1 = axes[0].imshow(data1[min_mape_idx].cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    axes[0].set_title(f"{labels[0]} (pred)")
+    # 1. 绘制第一个数据集（误差最小的样本）
+    im1 = axes[0].imshow(data1[min_l2_idx].cpu().detach().numpy(), cmap='viridis', aspect='auto')
+    axes[0].set_title(labels[0])
     fig.colorbar(im1, ax=axes[0])
     
-    # 2. 绘制第二个数据集（第0个样本）
-    im2 = axes[1].imshow(data2[min_mape_idx].cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    axes[1].set_title(f"{labels[1]} (true)")
+    # 2. 绘制第二个数据集（误差最小的样本）
+    im2 = axes[1].imshow(data2[min_l2_idx].cpu().detach().numpy(), cmap='viridis', aspect='auto')
+    axes[1].set_title(labels[1])
     fig.colorbar(im2, ax=axes[1])
     
-    # 3. 绘制差值图（第0个样本）+ 标注该样本的误差
-    diff = (data1 - data2)[min_mape_idx].cpu().detach().numpy()
+    # 3. 绘制差值图 + 标注当前样本的L2误差
+    diff = (data1 - data2)[min_l2_idx].cpu().detach().numpy()
     im3 = axes[2].imshow(diff, cmap='seismic', aspect='auto')
-    # 标注第0个样本的MAPE
     axes[2].set_title(
-        f"Difference ({labels[0]} - {labels[1]})\nMAPE: {sample_mape[0].item():.4f}%"
+        f"Difference ({labels[0]} - {labels[1]})\nL2error: {current_sample_l2:.6f}"
     )
     fig.colorbar(im3, ax=axes[2])
     
-    # 总标题增加整体误差
-    plt.suptitle(f"{title} | MAPE: {min_mape_value:.4f}%", fontsize=16)
+    # 总标题同时显示整体平均和当前样本的L2误差（与1D保持一致）
+    plt.suptitle(
+        f"{title}\n"
+        f"overall_L2error: {overall_l2_rel:.6f} | "
+        f"L2error: {current_sample_l2:.6f}",
+        fontsize=16
+    )
     
-    # 保存图像
+    # 调整布局避免标题截断
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
     plt.savefig(filename, dpi=300)
     plt.close()
 def plot_1d_results(data1, data2, labels, title, filename):

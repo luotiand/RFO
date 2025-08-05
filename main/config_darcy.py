@@ -13,14 +13,14 @@ lr = 1e-3
 batch_size = 4 # 减少批处理大小
 T = 1.0
 eq_dt = 0.01
-rf_dt = 0.2
+rf_dt = 1
 h_dim = 64
 train = 1
 rf = RectFlow()
 eq = PoissonEquation()
 # 模型相关
 # scorenet_model_class = "MLP2d_Darcy"  #  "MLP1d", "MLP2d", "FNO", "CNN"
-scorenet_model_class = "CNN_add"  #  "MLP1d", "MLP2d", "FNO", "CNN"
+scorenet_model_class = "FNO2d"  #  "MLP1d", "MLP2d", "FNO", "CNN"
 
 # GPU 设置
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

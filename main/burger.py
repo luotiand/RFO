@@ -17,7 +17,6 @@ import argparse
 import logging
 from Adam import Adam
 
-torch.set_default_dtype(torch.float)
 torch.set_default_dtype(torch.float32)
 torch.backends.cudnn.benchmark = True
 
@@ -255,6 +254,7 @@ def main(config):
                 remaining_time = (niter - epoch - 1) * (t2 - start_time) / (epoch + 1)
                 logging.info(
                     f"Epoch {epoch+1} - "
+                    f"Train Loss: {avg_train_loss:.6f}, "
                     f"Time: {epoch_time:.2f}s, "
                     f"Estimated Remaining: {remaining_time/60:.2f}min"
                 )

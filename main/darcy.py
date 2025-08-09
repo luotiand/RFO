@@ -224,7 +224,7 @@ def main(config):
                 with torch.no_grad():
                     xt = [a]
                     for t_val in np.arange(0.0, T, rf_dt):
-                        t_tensor = torch.ones(len(a[0]), 1, 1,device=device) * t_val
+                        t_tensor = torch.ones(len(a), 1, 1,device=device) * t_val
                         t_tensor = t_tensor.repeat(1, len(a[0]),len(a[0]))
                         score = score_net(xt[-1], t_tensor)
                         xt_ = rf.forward_process(xt[-1], score, dt=rf_dt)

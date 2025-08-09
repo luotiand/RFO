@@ -13,9 +13,9 @@ lr = 1e-3
 batch_size = 128  # 减少批处理大小
 T = 1.0
 eq_dt = 0.01
-rf_dt = 0.1
+rf_dt = 0.5
 h_dim = 2048
-train = 0
+train = 1
 rf = RectFlow()
 eq = PoissonEquation()
 # 模型相关

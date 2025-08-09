@@ -96,7 +96,7 @@ class FNO3d(nn.Module):
         self.modes3 = modes3
         self.width = width
         self.padding = 6 # pad the domain if input is non-periodic
-        self.fc0 = nn.Linear(13, self.width)
+        self.fc0 = nn.Linear(23, self.width)
         # input channel is 12: the solution of the first 10 timesteps + 3 locations (u(1, x, y), ..., u(10, x, y),  x, y, t)
 
         self.conv0 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
@@ -113,11 +113,11 @@ class FNO3d(nn.Module):
         self.bn3 = torch.nn.BatchNorm3d(self.width)
 
         self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, 1)
+        self.fc2 = nn.Linear(128, 10)
 
-    def forward(self, x):
+    def forward(self, x,t):
         grid = self.get_grid(x.shape, x.device)
-        x = torch.cat((x, grid), dim=-1)
+        x = torch.cat((x,t, grid), dim=-1)
         x = self.fc0(x)
         x = x.permute(0, 4, 1, 2, 3)
         x = F.pad(x, [0,self.padding]) # pad the domain if input is non-periodic

@@ -190,8 +190,8 @@ def plot_2d_results(data1, data2, labels, title, filename):
     with torch.no_grad():
         # 计算每个样本的L2相对误差（与1D逻辑一致）
         batch_size = data1.shape[0]
-        data1_flat = data1.view(batch_size, -1)  # 展平为(batch, H*W)
-        data2_flat = data2.view(batch_size, -1)
+        data1_flat = data1.reshape(batch_size, -1)  # 展平为(batch, H*W)
+        data2_flat = data2.reshape(batch_size, -1)
         
         # 分子：预测与真实的L2范数差
         diff_norm = torch.norm(data1_flat - data2_flat, p=2, dim=1)

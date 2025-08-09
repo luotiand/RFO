@@ -60,10 +60,10 @@ class LpLoss(object):
         return diff_norm
 
     def __call__(self, x, y, mode='rel'):
-        if mode == 'rel':
-            return self.rel(x, y)
-        else:
+        if mode == 'abs':
             return self.abs(x, y)
+        else:
+            return self.rel(x, y)
 
 
 ################################################################
@@ -201,7 +201,9 @@ def main(config):
                 a_ = (a_batch.to(device) - a_mean) / a_std
                 x_ = (x_batch.to(device) - x_mean) / x_std
                 
-                t = torch.rand(batch_size, 1, device=device)
+                time_options = torch.tensor([0.0, 0.5, 1.0], device=device, dtype=torch.float32)  # 定义可选时间值
+                rand_indices = torch.randint(0, 3, (batch_size, 1), device=device)  # 生成0-2的随机索引
+                t = time_options[rand_indices]  # 根据索引选取时间值（形状：(current_bs, 1)）
                 t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
                 t = t.repeat(1, len(a_[0]))
                 

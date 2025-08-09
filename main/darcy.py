@@ -158,7 +158,7 @@ def main(config):
     ################################################################
     # 模型初始化
     ################################################################
-    scorenet_model = globals()[scorenet_model_class](16, 64)
+    scorenet_model = globals()[scorenet_model_class](12,12,32)
     scorenet_model = scorenet_model.to(device)
     score_net = scorenet_model
     logging.info(f"Model initialized: {scorenet_model_class} on {device}")
@@ -198,7 +198,7 @@ def main(config):
                 rand_indices = torch.randint(0, 3, (batch_size, 1), device=device)  # 生成0-2的随机索引
                 t = time_options[rand_indices]  # 根据索引选取时间值（形状：(current_bs, 1)）
                 t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
-                t = t.repeat(1, len(a_[0]))
+                t = t.repeat(1, len(a_[0]), len(a_[0]))
                 
                 optimizer.zero_grad()
                 xt_ = rf.straight_process(a_, x_, t)

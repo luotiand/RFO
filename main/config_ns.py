@@ -4,7 +4,7 @@ from rectified.rectified_flow import RectFlow
 # from scorenet.scorenet import MLP1d, MLP2d, FNO3d, CNN,MLP2d_add,CNN_add,CNN_ns,MLP2d_bg,MLP2d_Darcy
 # 参数设置
 para_path = "/data5/store1/dlt/rectified_flow/modelpara/"
-save_path = "/data5/store1/dlt/rectified_flow/result/"
+save_path = "/data5/store1/dlt/rectified_flow/result/ns/"
 eq_T = 1.0 # 方程采样总长
 N = 10000  # a数量
 niter = 500

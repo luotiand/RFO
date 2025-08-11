@@ -97,7 +97,7 @@ def setup_logger(save_path):
 # 主函数
 ################################################################
 def main(config):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     if not torch.cuda.is_available():
         logging.warning("No GPU available, using CPU")
     
@@ -295,7 +295,7 @@ def main(config):
         xt = [a]
         for t_val in np.arange(0.0, T, rf_dt):
             t_tensor = torch.ones(len(xt[0]), 1, 1,device=device) * t_val
-            t_tensor = t_tensor.repeat(1, len(a[0],len(a[0])))
+            t_tensor = t_tensor.repeat(1, len(a[0]),len(a[0]))
             score = score_net(xt[-1], t_tensor)
             xt_ = rf.forward_process(xt[-1], score, dt=rf_dt)
             xt.append(xt_)

@@ -4,11 +4,11 @@ from rectified.rectified_flow import RectFlow
 from scorenet.scorenet import CNN_add,CNN_ns,MLP2d_Darcy,GNN_Darcy
 # 参数设置
 para_path = "/data5/store1/dlt/rectified_flow/modelpara/"
-save_path = "/data5/store1/dlt/rectified_flow/result/"
+save_path = "/data5/store1/dlt/rectified_flow/result/darcy/"
 eq_T = 1.0 # 方程采样总长
 N = 10000  # a数量
 niter = 500
-target_len=85
+target_len=141
 lr = 1e-3
 batch_size = 4 # 减少批处理大小
 T = 1.0

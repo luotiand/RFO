@@ -103,8 +103,8 @@ def main(config):
     check_interval = 50  # 测试评估间隔（与代码中(ep+1)%50==0对应）
     
     # 数据路径与参数
-    TRAIN_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat'
-    TEST_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat'
+    TRAIN_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-5_N1200_T20_R64.mat'
+    TEST_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-5_N1200_T20_R64.mat'
     ntrain = 1000
     ntest = 20
     modes = 4
@@ -119,7 +119,7 @@ def main(config):
     S = 64 // sub
     T_in = phys_time_steps
     T = phys_time_steps
-    T_out = 20
+    T_out = 10
     ################################################################
     # 加载数据（统一用to(device)）
     ################################################################

@@ -122,7 +122,7 @@ def main(config):
     # 数据加载与标准化
     ################################################################
     train_dataset = darcyDataset('/data5/store1/dlt/rectified_flow/data/piececonst_r421_N1024_smooth1.mat', mode='train',target_size=target_len)
-    test_dataset = darcyDataset('/data5/store1/dlt/rectified_flow/data/piececonst_r421_N1024_smooth2.mat', mode='train',target_size=target_len)
+    test_dataset = darcyDataset('/data5/store1/dlt/rectified_flow/data/piececonst_r421_N1024_smooth2.mat', mode='test',target_size=target_len)
     
     
     train_loader = DataLoader(

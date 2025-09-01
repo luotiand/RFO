@@ -50,6 +50,76 @@ class BurgersDataset(Dataset):
         # 读取输入输出数据（根据实际字段名调整）
         self.inputs = reader.read_field('a')    # 原始形状 [4, 8192]
         self.outputs = reader.read_field('u')   # 假设原始形状 [4, 201, 8192]（根据实际调整）
+        import ipdb;ipdb.set_trace()
+        # 下采样处理（如果指定了目标长度）
+        self.target_len = target_len
+        if target_len is not None:
+            self.inputs = self.downsample_by_step(self.inputs, target_len)
+            # 对outputs的空间维度下采样（假设outputs形状为[样本数, 时间步, 空间长度]）
+            self.outputs = self.downsample_by_step(self.outputs, target_len, dim=-1)
+        
+        # 数据集划分
+        total_samples = len(self.inputs)
+        indices = np.random.permutation(total_samples)
+        split_idx = int(train_ratio * total_samples)
+        
+        if mode == 'train':
+            self.indices = indices[:split_idx]
+        else:
+            self.indices = indices[split_idx:]
+    
+    def downsample_by_step(self, x, target_len, dim=1):
+        """
+        按间隔采样降低分辨率
+        
+        参数:
+            x: 原始张量，形状 [样本数, (时间步), 原始长度]
+            target_len: 目标空间长度（如4096, 2048等）
+            dim: 需要下采样的维度（输入是1D用dim=1，输出含时间步用dim=2）
+        
+        返回:
+            下采样后的张量
+        """
+        original_len = x.shape[dim]
+        step = original_len // target_len  # 计算采样间隔
+        # 生成采样索引（从0开始，每隔step取一个点）
+        indices = torch.arange(0, original_len, step, device=x.device)[:target_len]
+        # 按索引采样（保持其他维度不变）
+        return torch.index_select(x, dim=dim, index=indices)
+    
+    def __len__(self):
+        return len(self.indices)
+    
+    def __getitem__(self, idx):
+        # 获取原始索引
+        original_idx = self.indices[idx]
+        
+        # 输入数据（已下采样，形状 [target_len]）
+        a = self.inputs[original_idx]
+        
+        x = self.outputs[original_idx]
+        
+        return a.float(), x.float()  # 确保数据类型一致
+    
+    def get_full_data(self):
+        """返回整个数据集（测试时使用，已下采样）"""
+        x_full = self.inputs[self.indices]  # 形状 [N_test, target_len]
+        y_full = self.outputs[self.indices]  # 形状 [N_test, target_len]
+        return x_full, y_full
+
+
+class AdvectionDataset(Dataset):
+    def __init__(self, 
+                 file_path, 
+                 train_ratio=0.9, 
+                 mode='train',
+                 target_len=1024):  # 新增参数：目标长度（如4096,2048,512等，None表示不采样）
+        # 加载原始数据
+        with h5py.File(file_path, 'r') as f:
+            u = np.array(f['tensor'][:], dtype=np.float32)  # (50, 64, 64, 5000)
+        # 读取输入输出数据（根据实际字段名调整）
+        self.inputs = torch.from_numpy(u[0])    # 原始形状 [4, 8192]
+        self.outputs = torch.from_numpy(u[-1])   # 假设原始形状 [4, 201, 8192]（根据实际调整）
         
         # 下采样处理（如果指定了目标长度）
         self.target_len = target_len
@@ -108,8 +178,9 @@ class BurgersDataset(Dataset):
         y_full = self.outputs[self.indices]  # 形状 [N_test, 201, target_len]
         return x_full, y_full
 
+
 class darcyDataset(Dataset):
-    def __init__(self, file_path, train_ratio=1.0, test_ratio = 0.1,mode='train', target_size=None):
+    def __init__(self, file_path, train_ratio=1.0, test_ratio = 0.05,mode='train', target_size=None):
         # 加载原始数据
         reader = MatReader(file_path, to_cuda=False)
         
@@ -179,6 +250,73 @@ class darcyDataset(Dataset):
         x_full = self.inputs[self.indices]
         y_full = self.outputs[self.indices]
         return x_full, y_full
+
+
+class DiffusionDataset(Dataset):
+    def __init__(self, 
+                 file_path, 
+                 train_ratio=0.9, 
+                 mode='train'):
+        # 加载HDF5文件中的数据
+        with h5py.File(file_path, 'r') as f:
+            # 获取所有数据键（假设为'0000'到'0999'等格式）
+            self.keys = sorted([key for key in f.keys() if key.isdigit()])
+            # 验证数据数量
+            assert len(self.keys) > 0, "未找到有效的数据项"
+            
+            # 读取第一个数据项来确定形状
+            sample_key = self.keys[0]
+            sample_data = f[sample_key]['data'][:]  # shape (101, 128, 128, 2)
+            
+            # 初始化存储输入和输出的列表
+            self.inputs = []  # t=0时刻的数据
+            self.outputs = []  # t=-1（最后一个时刻，即t=100）的数据
+            
+            # 遍历所有数据项，提取t=0和t=-1时刻的数据
+            for key in self.keys:
+                data = np.array(f[key]['data'][:], dtype=np.float32)  # (101, 128, 128, 2)
+                
+                # 输入：t=0时刻的数据
+                input_t0 = data[0]  # (128, 128, 2)
+                self.inputs.append(input_t0)
+                
+                # 输出：t=-1（最后一个时刻）的数据
+                output_t_last = data[-1]  # (128, 128, 2)
+                self.outputs.append(output_t_last)
+        
+        self.inputs = torch.from_numpy(np.array(self.inputs))
+        self.outputs = torch.from_numpy(np.array(self.outputs))
+        
+        # 数据集划分
+        total_samples = len(self.keys)
+        indices = np.random.permutation(total_samples)
+        split_idx = int(train_ratio * total_samples)
+        
+        if mode == 'train':
+            self.indices = indices[:split_idx]
+        else:  # 验证或测试模式
+            self.indices = indices[split_idx:]
+    
+    def __len__(self):
+        return len(self.indices)
+    
+    def __getitem__(self, idx):
+        # 获取原始索引
+        original_idx = self.indices[idx]
+        
+        # 输入数据：t=0时刻 (2, 128, 128)
+        input_data = self.inputs[original_idx]
+        
+        # 输出数据：t=-1时刻 (2, 128, 128)
+        output_data = self.outputs[original_idx]
+        
+        return input_data.float(), output_data.float()
+    
+    def get_full_data(self):
+        """返回整个数据集（测试时使用）"""
+        input_full = self.inputs[self.indices]  # 形状 [N, 2, 128, 128]
+        output_full = self.outputs[self.indices]  # 形状 [N, 2, 128, 128]
+        return input_full, output_full
 class MyDataset(Dataset):
     def __init__(self, equation, dt=0.01, N=10000):
         """

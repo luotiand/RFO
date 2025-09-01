@@ -9,7 +9,7 @@ from script.ode_data import Eq1, WaveEquation, PoissonEquation, HeatEquation
 from rectified.rectified_flow import RectFlow
 import time
 import matplotlib.pyplot as plt
-from script.dataset import MyDataset_ns, BurgersDataset
+from script.dataset import MyDataset_ns, AdvectionDataset
 from torch.utils.data import DataLoader
 from scorenet.scorenet import CNN_add, CNN_ns, MLP2d_burger
 from scorenet.FNO1d import FNO1d
@@ -121,17 +121,17 @@ def main(config):
     ################################################################
     # 数据加载与标准化
     ################################################################
-    train_dataset = BurgersDataset(
-        '/data5/store1/dlt/rectified_flow/data/burgers_data_R10.mat',
+    train_dataset = AdvectionDataset(
+        '/data5/store1/dlt/PDEBench/pdebench/data_download/data/1D/Advection/Train/1D_Advection_Sols_beta0.4.hdf5',
         mode='train',
         target_len=target_len
     )
-    test_dataset = BurgersDataset(
-        '/data5/store1/dlt/rectified_flow/data/burgers_data_R10.mat',
+    test_dataset = AdvectionDataset(
+        '/data5/store1/dlt/PDEBench/pdebench/data_download/data/1D/Advection/Train/1D_Advection_Sols_beta0.4.hdf5',
         mode='test',
         target_len=target_len
     )
-    import ipdb; ipdb.set_trace()
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,

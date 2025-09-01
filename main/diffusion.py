@@ -4,15 +4,15 @@ import torch.optim as optim
 import numpy as np
 import os
 import subprocess
-from script.plot import plot_1d_results, plot_results, hinton, plot_3d_compare_with_diff
+from script.plot import plot_2d_results, plot_results, hinton, plot_3d_compare_with_diff
 from script.ode_data import Eq1, WaveEquation, PoissonEquation, HeatEquation
 from rectified.rectified_flow import RectFlow
 import time
 import matplotlib.pyplot as plt
-from script.dataset import MyDataset_ns, BurgersDataset
+from script.dataset import MyDataset_ns, DiffusionDataset
 from torch.utils.data import DataLoader
 from scorenet.scorenet import CNN_add, CNN_ns, MLP2d_burger
-from scorenet.FNO1d import FNO1d
+from scorenet.FNO2d import FNO2d,FNO2d_2
 import argparse
 import logging
 from Adam import Adam
@@ -97,7 +97,7 @@ def setup_logger(save_path):
 # 主函数
 ################################################################
 def main(config):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     if not torch.cuda.is_available():
         logging.warning("No GPU available, using CPU")
     
@@ -121,17 +121,9 @@ def main(config):
     ################################################################
     # 数据加载与标准化
     ################################################################
-    train_dataset = BurgersDataset(
-        '/data5/store1/dlt/rectified_flow/data/burgers_data_R10.mat',
-        mode='train',
-        target_len=target_len
-    )
-    test_dataset = BurgersDataset(
-        '/data5/store1/dlt/rectified_flow/data/burgers_data_R10.mat',
-        mode='test',
-        target_len=target_len
-    )
-    import ipdb; ipdb.set_trace()
+    train_dataset = DiffusionDataset('/data5/store1/dlt/PDEBench/pdebench/data_download/data/2D/diffusion-reaction/2D_diff-react_NA_NA.h5',mode='train')
+    test_dataset = DiffusionDataset('/data5/store1/dlt/PDEBench/pdebench/data_download/data/2D/diffusion-reaction/2D_diff-react_NA_NA.h5',mode='test')
+    # import ipdb ;ipdb.set_trace()
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -165,7 +157,7 @@ def main(config):
     ################################################################
     # 模型初始化
     ################################################################
-    scorenet_model = globals()[scorenet_model_class](16, 64)
+    scorenet_model = globals()[scorenet_model_class](12,12,32)
     scorenet_model = scorenet_model.to(device)
     score_net = scorenet_model
     logging.info(f"Model initialized: {scorenet_model_class} on {device}")
@@ -204,11 +196,13 @@ def main(config):
                 time_options = torch.tensor([0.0, 0.5, 1.0], device=device, dtype=torch.float32)  # 定义可选时间值
                 rand_indices = torch.randint(0, 3, (batch_size, 1), device=device)  # 生成0-2的随机索引
                 t = time_options[rand_indices]  # 根据索引选取时间值（形状：(current_bs, 1)）
+                # import ipdb;ipdb.set_trace()
                 t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
-                t = t.repeat(1, len(a_[0]))
+                t = t.repeat(1, len(a_[0]), len(a_[0]),1)
                 
                 optimizer.zero_grad()
                 xt_ = rf.straight_process(a_, x_, t)
+                # import ipdb;ipdb.set_trace()
                 exact_score = x_ - a_
                 pred_score = score_net(xt_, t)
                 
@@ -231,8 +225,8 @@ def main(config):
                 with torch.no_grad():
                     xt = [a]
                     for t_val in np.arange(0.0, T, rf_dt):
-                        t_tensor = torch.ones(len(xt[0]), 1, device=device) * t_val
-                        t_tensor = t_tensor.repeat(1, len(a[0]))
+                        t_tensor = torch.ones(len(a), 1, 1,1,device=device) * t_val
+                        t_tensor = t_tensor.repeat(1, len(a[0]),len(a[0]),1)
                         score = score_net(xt[-1], t_tensor)
                         xt_ = rf.forward_process(xt[-1], score, dt=rf_dt)
                         xt.append(xt_)
@@ -301,8 +295,8 @@ def main(config):
         # 正向推理
         xt = [a]
         for t_val in np.arange(0.0, T, rf_dt):
-            t_tensor = torch.ones(len(xt[0]), 1, device=device) * t_val
-            t_tensor = t_tensor.repeat(1, len(a[0]))
+            t_tensor = torch.ones(len(xt[0]), 1, 1,1,device=device) * t_val
+            t_tensor = t_tensor.repeat(1, len(a[0]),len(a[0]),1)
             score = score_net(xt[-1], t_tensor)
             xt_ = rf.forward_process(xt[-1], score, dt=rf_dt)
             xt.append(xt_)
@@ -310,8 +304,8 @@ def main(config):
         # 反向推理
         yt = [x]
         for t_val in np.arange(0.0, T, rf_dt):
-            t_tensor = torch.ones(len(yt[0]), 1, device=device) * t_val
-            t_tensor = t_tensor.repeat(1, len(a[0]))
+            t_tensor = torch.ones(len(yt[0]), 1, 1,1,device=device) * t_val
+            t_tensor = t_tensor.repeat(1, len(a[0]),len(a[0]),1)
             score = score_net(yt[-1], T - t_tensor)
             yt_ = rf.reverse_process(yt[-1], score, dt=rf_dt)
             yt.append(yt_)
@@ -327,21 +321,34 @@ def main(config):
         logging.info(f"最终评估 - L2 Relative Error: {final_l2rel:.6f}")
         
         # 绘图（保持原始命名）
-        plot_1d_results(
-            data1=xt_last,
-            data2=x_true,
+        plot_2d_results(
+            data1=xt_last[:,:,:,0].squeeze(-1),
+            data2=x_true[:,:,:,0].squeeze(-1),
             labels=['Predicted', 'Ground Truth'],
             title=f'Forward Inference (L2 Rel Error: {final_l2rel:.6f})',  # 标题仅L2
-            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_operator_learning_1d.png'
+            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_operator_learning_1d1.png'
         )
-        plot_1d_results(
-            data1=yt_last,
-            data2=y_true,
+        plot_2d_results(
+            data1=xt_last[:,:,:,1].squeeze(-1),
+            data2=x_true[:,:,:,1].squeeze(-1),
+            labels=['Predicted', 'Ground Truth'],
+            title=f'Forward Inference (L2 Rel Error: {final_l2rel:.6f})',  # 标题仅L2
+            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_operator_learning_1d2.png'
+        )
+        plot_2d_results(
+            data1=yt_last[:,:,:,0].squeeze(-1),
+            data2=y_true[:,:,:,0].squeeze(-1),
             labels=['Predicted', 'Ground Truth'],
             title='Reverse Inference',
-            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_reverse_learning_1d.png'
+            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_reverse_learning_1d1.png'
         )
-
+        plot_2d_results(
+            data1=yt_last[:,:,:,1].squeeze(-1),
+            data2=y_true[:,:,:,1].squeeze(-1),
+            labels=['Predicted', 'Ground Truth'],
+            title='Reverse Inference',
+            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_reverse_learning_1d2.png'
+        )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -29,19 +29,20 @@ np.random.seed(0)
 # 3d fourier layers
 ################################################################
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
 class SpectralConv3d(nn.Module):
     def __init__(self, in_channels, out_channels, modes1, modes2, modes3):
         super(SpectralConv3d, self).__init__()
-
-        """
-        3D Fourier layer. It does FFT, linear transform, and Inverse FFT.    
-        """
-
+        # 保持傅里叶层结构不变（仅负责特征变换，不改变空间/时间维度）
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.modes1 = modes1 #Number of Fourier modes to multiply, at most floor(N/2) + 1
-        self.modes2 = modes2
-        self.modes3 = modes3
+        self.modes1 = modes1  # 傅里叶模式数（需 ≤ 64//2 + 1）
+        self.modes2 = modes2  # 需 ≤ 64//2 + 1
+        self.modes3 = modes3  # 需 ≤ 10//2 + 1（适配新的时间维度10）
 
         self.scale = (1 / (in_channels * out_channels))
         self.weights1 = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, self.modes2, self.modes3, dtype=torch.cfloat))
@@ -49,115 +50,111 @@ class SpectralConv3d(nn.Module):
         self.weights3 = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, self.modes2, self.modes3, dtype=torch.cfloat))
         self.weights4 = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, self.modes2, self.modes3, dtype=torch.cfloat))
 
-    # Complex multiplication
     def compl_mul3d(self, input, weights):
-        # (batch, in_channel, x,y,t ), (in_channel, out_channel, x,y,t) -> (batch, out_channel, x,y,t)
+        # 复数乘法：(B, in_c, x, y, t) × (in_c, out_c, x, y, t) → (B, out_c, x, y, t)
         return torch.einsum("bixyz,ioxyz->boxyz", input, weights)
 
     def forward(self, x):
         batchsize = x.shape[0]
-        #Compute Fourier coeffcients up to factor of e^(- something constant)
-        x_ft = torch.fft.rfftn(x, dim=[-3,-2,-1])
+        x_ft = torch.fft.rfftn(x, dim=[-3, -2, -1])  # 傅里叶变换（保留批次和通道维度）
 
-        # Multiply relevant Fourier modes
+        # 仅对关键傅里叶模式进行操作（不改变维度大小）
         out_ft = torch.zeros(batchsize, self.out_channels, x.size(-3), x.size(-2), x.size(-1)//2 + 1, dtype=torch.cfloat, device=x.device)
-        out_ft[:, :, :self.modes1, :self.modes2, :self.modes3] = \
-            self.compl_mul3d(x_ft[:, :, :self.modes1, :self.modes2, :self.modes3], self.weights1)
-        out_ft[:, :, -self.modes1:, :self.modes2, :self.modes3] = \
-            self.compl_mul3d(x_ft[:, :, -self.modes1:, :self.modes2, :self.modes3], self.weights2)
-        out_ft[:, :, :self.modes1, -self.modes2:, :self.modes3] = \
-            self.compl_mul3d(x_ft[:, :, :self.modes1, -self.modes2:, :self.modes3], self.weights3)
-        out_ft[:, :, -self.modes1:, -self.modes2:, :self.modes3] = \
-            self.compl_mul3d(x_ft[:, :, -self.modes1:, -self.modes2:, :self.modes3], self.weights4)
+        out_ft[:, :, :self.modes1, :self.modes2, :self.modes3] = self.compl_mul3d(x_ft[:, :, :self.modes1, :self.modes2, :self.modes3], self.weights1)
+        out_ft[:, :, -self.modes1:, :self.modes2, :self.modes3] = self.compl_mul3d(x_ft[:, :, -self.modes1:, :self.modes2, :self.modes3], self.weights2)
+        out_ft[:, :, :self.modes1, -self.modes2:, :self.modes3] = self.compl_mul3d(x_ft[:, :, :self.modes1, -self.modes2:, :self.modes3], self.weights3)
+        out_ft[:, :, -self.modes1:, -self.modes2:, :self.modes3] = self.compl_mul3d(x_ft[:, :, -self.modes1:, -self.modes2:, :self.modes3], self.weights4)
 
-        #Return to physical space
-        x = torch.fft.irfftn(out_ft, s=(x.size(-3), x.size(-2), x.size(-1)))
+        x = torch.fft.irfftn(out_ft, s=(x.size(-3), x.size(-2), x.size(-1)))  # 逆变换回物理空间（维度不变）
         return x
 
 class FNO3d(nn.Module):
     def __init__(self, modes1, modes2, modes3, width):
         super(FNO3d, self).__init__()
-
         """
-        The overall network. It contains 4 layers of the Fourier layer.
-        1. Lift the input to the desire channel dimension by self.fc0 .
-        2. 4 layers of the integral operators u' = (W + K)(u).
-            W defined by self.w; K defined by self.conv .
-        3. Project from the channel space to the output space by self.fc1 and self.fc2 .
-        
-        input: the solution of the first 10 timesteps + 3 locations (u(1, x, y), ..., u(10, x, y),  x, y, t). It's a constant function in time, except for the last index.
-        input shape: (batchsize, x=64, y=64, t=40, c=13)
-        output: the solution of the next 40 timesteps
-        output shape: (batchsize, x=64, y=64, t=40, c=1)
+        输入形状：(B, 64, 64, 10, 1)  # (批次, x维度, y维度, t维度, 特征数)
+        输出形状：(B, 64, 64, 10, 1)  # 与输入形状完全一致
         """
-
         self.modes1 = modes1
         self.modes2 = modes2
-        self.modes3 = modes3
+        self.modes3 = modes3  # 需 ≤ 10//2 + 1（适配t=10）
         self.width = width
-        self.padding = 6 # pad the domain if input is non-periodic
-        self.fc0 = nn.Linear(23, self.width)
-        # input channel is 12: the solution of the first 10 timesteps + 3 locations (u(1, x, y), ..., u(10, x, y),  x, y, t)
+        self.padding = 3  # 较小的padding避免维度膨胀（原6可能导致t维度过大）
 
-        self.conv0 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
-        self.conv1 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
-        self.conv2 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
-        self.conv3 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
-        self.w0 = nn.Conv3d(self.width, self.width, 1)
+        # 1. 输入特征映射：将输入特征数（1）+ 位置特征（3）映射到width维度
+        self.fc0 = nn.Linear(5, self.width)  # 输入特征1 + grid的3个位置特征 → 总4维
+
+        # 2. 傅里叶层和卷积层（保持通道数和空间/时间维度）
+        self.conv0 = SpectralConv3d(self.width, self.width, modes1, modes2, modes3)
+        self.conv1 = SpectralConv3d(self.width, self.width, modes1, modes2, modes3)
+        self.conv2 = SpectralConv3d(self.width, self.width, modes1, modes2, modes3)
+        self.w0 = nn.Conv3d(self.width, self.width, 1)  # 1x1x1卷积（不改变空间维度）
         self.w1 = nn.Conv3d(self.width, self.width, 1)
         self.w2 = nn.Conv3d(self.width, self.width, 1)
-        self.w3 = nn.Conv3d(self.width, self.width, 1)
-        self.bn0 = torch.nn.BatchNorm3d(self.width)
-        self.bn1 = torch.nn.BatchNorm3d(self.width)
-        self.bn2 = torch.nn.BatchNorm3d(self.width)
-        self.bn3 = torch.nn.BatchNorm3d(self.width)
+        self.bn0 = nn.BatchNorm3d(self.width)  # 批归一化（稳定训练）
+        self.bn1 = nn.BatchNorm3d(self.width)
+        self.bn2 = nn.BatchNorm3d(self.width)
 
-        self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, 10)
+        # 3. 输出特征映射：从width维度映射回1个特征（与输入一致）
+        self.fc1 = nn.Linear(self.width, 64)  # 中间压缩
+        self.fc2 = nn.Linear(64, 1)  # 最终输出1个特征
 
     def forward(self, x,t):
-        grid = self.get_grid(x.shape, x.device)
-        x = torch.cat((x,t, grid), dim=-1)
-        x = self.fc0(x)
-        x = x.permute(0, 4, 1, 2, 3)
-        x = F.pad(x, [0,self.padding]) # pad the domain if input is non-periodic
+        # 输入x形状：(B, 64, 64, 10, 1)
+        batchsize = x.shape[0]
+        # import ipdb ;ipdb.set_trace()
+        # 生成位置特征（x, y, t坐标）并拼接：(B, 64, 64, 10, 1) → (B, 64, 64, 10, 4)
+        grid = self.get_grid(x.shape, x.device)  # grid形状：(B, 64, 64, 10, 3)
+        x = torch.cat((x, t,grid), dim=-1)  # 拼接后特征数：1 + 3 = 4
 
+        # 输入映射：(B, 64, 64, 10, 4) → (B, 64, 64, 10, width)
+        x = self.fc0(x)
+        
+        # 维度重排：(B, x, y, t, c) → (B, c, x, y, t)（适配3D卷积/傅里叶层）
+        x = x.permute(0, 4, 1, 2, 3)  # 形状：(B, width, 64, 64, 10)
+        
+        #  padding：仅在时间维度补零（避免空间维度变形）
+        x = F.pad(x, [0, self.padding])  # 形状：(B, width, 64, 64, 10+padding)
+
+        # 傅里叶层 + 残差连接（保持维度）
         x1 = self.conv0(x)
         x2 = self.w0(x)
-        x = x1 + x2
-        x = F.gelu(x)
+        x = self.bn0(x1 + x2)
+        x = F.gelu(x)  # 激活函数
 
         x1 = self.conv1(x)
         x2 = self.w1(x)
-        x = x1 + x2
+        x = self.bn1(x1 + x2)
         x = F.gelu(x)
 
         x1 = self.conv2(x)
         x2 = self.w2(x)
-        x = x1 + x2
-        x = F.gelu(x)
+        x = self.bn2(x1 + x2)  # 最后一层可不加激活，保留更多信息
 
-        x1 = self.conv3(x)
-        x2 = self.w3(x)
-        x = x1 + x2
+        # 裁剪padding：恢复时间维度为10
+        x = x[..., :-self.padding]  # 形状：(B, width, 64, 64, 10)
+        
+        # 维度重排：(B, c, x, y, t) → (B, x, y, t, c)（还原原始维度顺序）
+        x = x.permute(0, 2, 3, 4, 1)  # 形状：(B, 64, 64, 10, width)
 
-        x = x[..., :-self.padding]
-        x = x.permute(0, 2, 3, 4, 1) # pad the domain if input is non-periodic
-        x = self.fc1(x)
+        # 输出映射：从width维度 → 1个特征
+        x = self.fc1(x)  # (B, 64, 64, 10, 64)
         x = F.gelu(x)
-        x = self.fc2(x)
+        x = self.fc2(x)  # (B, 64, 64, 10, 1) → 与输入形状一致
+
         return x
 
     def get_grid(self, shape, device):
+        # 生成x, y, t三个维度的坐标网格（范围0~1）
         batchsize, size_x, size_y, size_z = shape[0], shape[1], shape[2], shape[3]
-        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
-        gridx = gridx.reshape(1, size_x, 1, 1, 1).repeat([batchsize, 1, size_y, size_z, 1])
-        gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
-        gridy = gridy.reshape(1, 1, size_y, 1, 1).repeat([batchsize, size_x, 1, size_z, 1])
-        gridz = torch.tensor(np.linspace(0, 1, size_z), dtype=torch.float)
-        gridz = gridz.reshape(1, 1, 1, size_z, 1).repeat([batchsize, size_x, size_y, 1, 1])
-        return torch.cat((gridx, gridy, gridz), dim=-1).to(device)
-
+        # x坐标：(1, 64, 1, 1, 1) → 重复为(B, 64, 64, 10, 1)
+        gridx = torch.linspace(0, 1, size_x, device=device).reshape(1, size_x, 1, 1, 1).repeat(batchsize, 1, size_y, size_z, 1)
+        # y坐标：(1, 1, 64, 1, 1) → 重复为(B, 64, 64, 10, 1)
+        gridy = torch.linspace(0, 1, size_y, device=device).reshape(1, 1, size_y, 1, 1).repeat(batchsize, size_x, 1, size_z, 1)
+        # t坐标：(1, 1, 1, 10, 1) → 重复为(B, 64, 64, 10, 1)
+        gridz = torch.linspace(0, 1, size_z, device=device).reshape(1, 1, 1, size_z, 1).repeat(batchsize, size_x, size_y, 1, 1)
+        return torch.cat((gridx, gridy, gridz), dim=-1)  # 合并为3个特征
+    
 # ################################################################
 # # configs
 # ################################################################

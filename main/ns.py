@@ -79,7 +79,7 @@ def plot_separate_loss_curves(train_losses, test_losses, test_epochs, save_path,
 
 def main(config):
     # 统一设备管理（优先GPU 1，否则CPU）
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
     save_path = config['save_path']
     para_path = config['para_path']
@@ -103,11 +103,11 @@ def main(config):
     check_interval = 50  # 测试评估间隔（与代码中(ep+1)%50==0对应）
     
     # 数据路径与参数
-    TRAIN_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-5_N1200_T20_R64.mat'
-    TEST_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-5_N1200_T20_R64.mat'
+    TRAIN_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat'
+    TEST_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat'
     ntrain = 1000
     ntest = 20
-    modes = 4
+    modes = 8
     width = 20
     epochs = niter
     learning_rate = lr
@@ -118,8 +118,8 @@ def main(config):
     sub = 1
     S = 64 // sub
     T_in = phys_time_steps
-    T = phys_time_steps
-    T_out = 10
+    T_out = 20
+    T = 10
     ################################################################
     # 加载数据（统一用to(device)）
     ################################################################
@@ -143,10 +143,11 @@ def main(config):
     test_u_norm = y_normalizer.encode(test_u)
     
     # 调整形状（添加通道维度）
-    train_a_norm = train_a_norm.reshape(ntrain, S, S, 1, T).to(device)
-    test_a_norm = test_a_norm.reshape(ntest, S, S, 1, T).to(device)
-    train_u_norm = train_u_norm.reshape(ntrain, S, S, 1, T).to(device)
-    test_u_norm = test_u_norm.reshape(ntest, S, S, 1, T).to(device)
+    # train_a_norm = train_a_norm.reshape(ntrain, S, S, 1, T_in).repeat([1,1,1,T,1]).to(device)
+    # test_a_norm = test_a_norm.reshape(ntest, S, S, 1, T_in).repeat([1,1,1,T,1]).to(device)
+    train_a_norm = train_a_norm.reshape(ntrain, S, S, T_in, 1).to(device)
+    test_a_norm = test_a_norm.reshape(ntest, S, S, T_in, 1).to(device)
+
 
     # 数据加载器
     train_loader = DataLoader(
@@ -163,7 +164,7 @@ def main(config):
     ################################################################
     # 模型初始化
     ################################################################
-    model = FNO3d(modes, modes, modes, width).to(device)
+    model = FNO3d(modes, modes, 4, width).to(device)
     logging.info(f"模型参数数量: {count_params(model)}")
     
     if train:
@@ -195,12 +196,12 @@ def main(config):
                 rand_indices = torch.randint(0, 3, (current_bs, 1), device=device)  # 生成0-2的随机索引
                 t = time_options[rand_indices]  # 根据索引选取时间值（形状：(current_bs, 1)）
                 t = t.view(current_bs, *([1] * (len(x.shape) - 1)))
-                t = t.repeat(1, S, S, 1, T)
+                t = t.repeat(1, S, S, T, 1)
                 
                 optimizer.zero_grad()
-                xt = rf.straight_process(x, y, t)
+                xt = rf.straight_process(x, y.unsqueeze(-1), t)
                 out = model(xt, t).view(current_bs, S, S, T)
-                l2 = myloss(out.view(current_bs, -1), (y - x).view(current_bs, -1))
+                l2 = myloss(out.view(current_bs, -1), (y - x.squeeze(-1)).view(current_bs, -1))
                 l2.backward()
                 optimizer.step()
                 train_l2 += l2.item()
@@ -224,7 +225,7 @@ def main(config):
                         for t_val in np.arange(0.0, 1, rf_dt):
                             t = torch.full((current_bs, 1), t_val, device=device, dtype=torch.float32)
                             t = t.view(current_bs, *([1] * (len(x.shape) - 1)))
-                            t = t.repeat(1, S, S, 1, T)
+                            t = t.repeat(1, S, S, T, 1)
                             score = model(xt[-1], t)
                             xt_ = rf.forward_process(xt[-1], score, dt=rf_dt)
                             xt.append(xt_)
@@ -271,27 +272,27 @@ def main(config):
             current_bs = xt_forward[-1].shape[0]
             t = torch.full((current_bs, 1), t_val, device=device, dtype=torch.float32)
             t = t.view(current_bs, *([1] * (len(xt_forward[-1].shape) - 1)))
-            t = t.repeat(1, S, S, 1, T)
+            t = t.repeat(1, S, S, T, 1)
             score = model(xt_forward[-1], t)
             xt_ = rf.forward_process(xt_forward[-1], score, dt=rf_dt)
             xt_forward.append(xt_)
         
         # 反向推理
-        xt_reverse = [test_u_norm]
+        xt_reverse = [test_u_norm.unsqueeze(-1)]
         for t_val in np.arange(0.0, 1, rf_dt):
             current_bs = xt_reverse[-1].shape[0]
             t = torch.full((current_bs, 1), t_val, device=device, dtype=torch.float32)
             t = t.view(current_bs, *([1] * (len(xt_reverse[-1].shape) - 1)))
-            t = t.repeat(1, S, S, 1, T)
+            t = t.repeat(1, S, S, T,1)
             score = model(xt_reverse[-1], 1 - t)
             xt_ = rf.reverse_process(xt_reverse[-1], score, dt=rf_dt)
             xt_reverse.append(xt_)
         
         # 解码并可视化10个物理时间步
         pred_u_forward = y_normalizer.decode(xt_forward[-1].view(ntest, S, S, phys_time_steps))
-        true_u = y_normalizer.decode(test_u_norm.squeeze(-2))
+        true_u = y_normalizer.decode(test_u_norm.view(ntest, S, S, phys_time_steps))
         pred_a_reverse = a_normalizer.decode(xt_reverse[-1].view(ntest, S, S, phys_time_steps))
-        true_a = a_normalizer.decode(test_a_norm.squeeze(-2))
+        true_a = a_normalizer.decode(test_a_norm.view(ntest, S, S, phys_time_steps))
         
         # 正向推理可视化
         for t_step in range(phys_time_steps):

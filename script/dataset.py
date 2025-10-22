@@ -50,7 +50,7 @@ class BurgersDataset(Dataset):
         # 读取输入输出数据（根据实际字段名调整）
         self.inputs = reader.read_field('a')    # 原始形状 [4, 8192]
         self.outputs = reader.read_field('u')   # 假设原始形状 [4, 201, 8192]（根据实际调整）
-        import ipdb;ipdb.set_trace()
+        # import ipdb;ipdb.set_trace()
         # 下采样处理（如果指定了目标长度）
         self.target_len = target_len
         if target_len is not None:

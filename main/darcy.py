@@ -158,7 +158,7 @@ def main(config):
     ################################################################
     # 模型初始化
     ################################################################
-    scorenet_model = globals()[scorenet_model_class](12,12,32)
+    scorenet_model = globals()[scorenet_model_class](16,16,48)
     scorenet_model = scorenet_model.to(device)
     score_net = scorenet_model
     logging.info(f"Model initialized: {scorenet_model_class} on {device}")
@@ -194,8 +194,8 @@ def main(config):
                 a_ = (a_batch.to(device) - a_mean) / a_std
                 x_ = (x_batch.to(device) - x_mean) / x_std
                 
-                time_options = torch.tensor([0.0, 0.5, 1.0], device=device, dtype=torch.float32)  # 定义可选时间值
-                rand_indices = torch.randint(0, 3, (batch_size, 1), device=device)  # 生成0-2的随机索引
+                time_options = torch.tensor([0.0, 1.0], device=device, dtype=torch.float32)  # 定义可选时间值
+                rand_indices = torch.randint(0, 2, (batch_size, 1), device=device)  # 生成0-2的随机索引
                 t = time_options[rand_indices]  # 根据索引选取时间值（形状：(current_bs, 1)）
                 t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
                 t = t.repeat(1, len(a_[0]), len(a_[0]))
@@ -313,26 +313,36 @@ def main(config):
         xt_last = xt[-1] * x_std + x_mean
         x_true = x * x_std + x_mean
         yt_last = yt[-1] * a_std + a_mean
+        threshold = (3 + 12) / 2  # 结果为 7.5
+
+        # 2. 对 yt_last 进行阈值化处理：
+        #    - 小于阈值 7.5 的值设为 3
+        #    - 大于等于阈值 7.5 的值设为 12
+        # （用 torch.tensor 确保设备和数据类型与 yt_last 一致，避免报错）
+        yt_last = torch.where(
+            yt_last < threshold,  # 条件：小于阈值
+            torch.tensor(3.0, device=yt_last.device, dtype=yt_last.dtype),  # 满足条件时赋值 3
+            torch.tensor(12.0, device=yt_last.device, dtype=yt_last.dtype)  # 不满足条件时赋值 12
+        )
         y_true = a * a_std + a_mean
         
         # 计算最终指标（仅L2）
         final_l2rel = calculate_metrics(xt_last, x_true)
+        final_l2rel2 = calculate_metrics(yt_last, y_true)
         logging.info(f"最终评估 - L2 Relative Error: {final_l2rel:.6f}")
-        
+        logging.info(f"最终评估 - L2 Relative Error: {final_l2rel2:.6f}")
         # 绘图（保持原始命名）
         plot_2d_results(
-            data1=xt_last,
-            data2=x_true,
-            labels=['Predicted', 'Ground Truth'],
-            title=f'Forward Inference (L2 Rel Error: {final_l2rel:.6f})',  # 标题仅L2
-            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_operator_learning_1d.png'
+            data1=x_true,
+            data2=xt_last,
+            labels=['Ground Truth','Prediction'],
+            base_filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_operator_learning_1d'
         )
         plot_2d_results(
-            data1=yt_last,
-            data2=y_true,
-            labels=['Predicted', 'Ground Truth'],
-            title='Reverse Inference',
-            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_reverse_learning_1d.png'
+            data1=y_true,
+            data2=yt_last,
+            labels=['Ground Truth','Prediction'],
+            base_filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_reverse_learning_1d'
         )
 
 

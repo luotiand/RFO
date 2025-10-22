@@ -107,8 +107,8 @@ def main(config):
     TEST_PATH = '/data5/store1/dlt/rectified_flow/data/ns_V1e-3_N5000_T50.mat'
     ntrain = 1000
     ntest = 20
-    modes = 8
-    width = 20
+    modes = 18
+    width = 30
     epochs = niter
     learning_rate = lr
     scheduler_step = 100
@@ -299,11 +299,10 @@ def main(config):
             pred_u_t = pred_u_forward[..., t_step]
             true_u_t = true_u[..., t_step]
             plot_2d_results(
-                data1=pred_u_t,
-                data2=true_u_t,
-                labels=[f'Forward Pred (t={t_step})', f'Truth (t={t_step})'],
-                title=f'Forward Inference (t= {t_step})',
-                filename=f'{forward_vis_path}t{t_step}.png'
+                data1=true_u_t,
+                data2=pred_u_t,                
+                labels=[f'Ground Truth',f'Prediction' ],
+                base_filename=f'{forward_vis_path}t{t_step}'
             )
         
         # 反向推理可视化
@@ -311,11 +310,10 @@ def main(config):
             pred_a_t = pred_a_reverse[..., t_step]
             true_a_t = true_a[..., t_step]
             plot_2d_results(
-                data1=pred_a_t,
-                data2=true_a_t,
-                labels=[f'Reverse Pred (t={t_step})', f'Truth (t={t_step})'],
-                title=f'Reverse Inference (t= {t_step})',
-                filename=f'{reverse_vis_path}t{t_step}.png'
+                data1=true_a_t,
+                data2=pred_a_t,
+                labels=[f'Ground Truth',f'Prediction' ],
+                base_filename=f'{reverse_vis_path}t{t_step}'
             )
         
         logging.info(f"可视化已保存至:\n正向: {forward_vis_path}\n反向: {reverse_vis_path}")

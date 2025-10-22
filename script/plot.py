@@ -181,74 +181,71 @@ def hinton(matrix, max_weight=None, ax=None):
     plt.show()
 
 # Plot the Hinton diagram
-
-def plot_2d_results(data1, data2, labels, title, filename):
+def plot_2d_results(data1, data2, labels, base_filename):
     """
-    绘制二维数据的比较图、差值图，基于L2相对误差选择样本
-    标题同时显示整体平均和当前样本的L2相对误差
+    随机选择5个样本，分别保存GT和预测图，移除横纵坐标数值（无刻度线和标签）
+    标题字体调大至16，无边框
     """
     with torch.no_grad():
-        # 计算每个样本的L2相对误差（与1D逻辑一致）
         batch_size = data1.shape[0]
-        data1_flat = data1.reshape(batch_size, -1)  # 展平为(batch, H*W)
-        data2_flat = data2.reshape(batch_size, -1)
-        
-        # 分子：预测与真实的L2范数差
-        diff_norm = torch.norm(data1_flat - data2_flat, p=2, dim=1)
-        # 分母：真实值的L2范数（添加小值保护）
-        data2_norm = torch.norm(data2_flat, p=2, dim=1)
-        data2_norm_safe = torch.where(
-            data2_norm < 1e-10, 
-            torch.ones_like(data2_norm) * 1e-10, 
-            data2_norm
-        )
-        
-        # 样本级和整体L2相对误差
-        sample_l2_rel = diff_norm / data2_norm_safe
-        overall_l2_rel = sample_l2_rel.mean().item()  # 整体平均L2误差
-        
-        # 找到L2相对误差最小的样本（用于可视化）
-        min_l2_idx = torch.argmin(sample_l2_rel).item()
-        current_sample_l2 = sample_l2_rel[min_l2_idx].item()  # 当前展示样本的L2误差
-        
-        # 打印误差信息（与1D函数风格统一）
-        print(f"所有样本的平均L2相对误差: {overall_l2_rel:.6f}")
-        print(f"当前展示样本的L2相对误差: {current_sample_l2:.6f}")
-        print(f"样本L2相对误差范围: {sample_l2_rel.min().item():.6f} ~ {sample_l2_rel.max().item():.6f}")
+        if batch_size < 5:
+            raise ValueError(f"批次大小({batch_size})小于5，无法随机选择5个样本")
+        rand_indices = torch.randperm(batch_size)[:5].tolist()
 
-    # 可视化部分
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    
-    # 1. 绘制第一个数据集（误差最小的样本）
-    im1 = axes[0].imshow(data1[min_l2_idx].cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    axes[0].set_title(labels[0])
-    fig.colorbar(im1, ax=axes[0])
-    
-    # 2. 绘制第二个数据集（误差最小的样本）
-    im2 = axes[1].imshow(data2[min_l2_idx].cpu().detach().numpy(), cmap='viridis', aspect='auto')
-    axes[1].set_title(labels[1])
-    fig.colorbar(im2, ax=axes[1])
-    
-    # 3. 绘制差值图 + 标注当前样本的L2误差
-    diff = (data1 - data2)[min_l2_idx].cpu().detach().numpy()
-    im3 = axes[2].imshow(diff, cmap='seismic', aspect='auto')
-    axes[2].set_title(
-        f"Difference ({labels[0]} - {labels[1]})\nL2error: {current_sample_l2:.6f}"
-    )
-    fig.colorbar(im3, ax=axes[2])
-    
-    # 总标题同时显示整体平均和当前样本的L2误差（与1D保持一致）
-    plt.suptitle(
-        f"{title}\n"
-        f"overall_L2error: {overall_l2_rel:.6f} | "
-        f"L2error: {current_sample_l2:.6f}",
-        fontsize=16
-    )
-    
-    # 调整布局避免标题截断
-    plt.tight_layout(rect=[0, 0, 1, 0.94])
-    plt.savefig(filename, dpi=300)
-    plt.close()
+    for i, idx in enumerate(rand_indices, 1):
+        with torch.no_grad():
+            gt_sample = data1[idx].cpu().detach().numpy()
+            predict_sample = data2[idx].cpu().detach().numpy()
+
+        ###########################################################################
+        # 1. 真实值(GT)图：无横纵坐标数值
+        ###########################################################################
+        fig_gt, ax_gt = plt.subplots(1, 1, figsize=(8, 6))
+        im_gt = ax_gt.imshow(gt_sample, cmap='viridis', aspect='auto')
+        
+        # 核心修改：移除横纵坐标的刻度线和数值
+        ax_gt.set_xticks([])  # 清除x轴刻度
+        ax_gt.set_yticks([])  # 清除y轴刻度
+        ax_gt.set_xticklabels([])  # 清除x轴标签（冗余保障）
+        ax_gt.set_yticklabels([])  # 清除y轴标签（冗余保障）
+        
+        # 标题设置（字体调大+无边框）
+        ax_gt.set_title(
+            f"{labels[0]}", 
+            fontsize=36,
+            bbox=None
+        )
+        fig_gt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
+        plt.tight_layout()
+        gt_save_path = f"{base_filename}_rand{i}_gt.png"
+        plt.savefig(gt_save_path, dpi=300, bbox_inches='tight')
+        plt.close(fig_gt)
+        print(f"已保存样本{i} - {labels[0]}图：{gt_save_path}")
+
+        ###########################################################################
+        # 2. 预测值(Predict)图：无横纵坐标数值
+        ###########################################################################
+        fig_pred, ax_pred = plt.subplots(1, 1, figsize=(8, 6))
+        im_pred = ax_pred.imshow(predict_sample, cmap='viridis', aspect='auto')
+        
+        # 同样移除横纵坐标数值
+        ax_pred.set_xticks([])
+        ax_pred.set_yticks([])
+        ax_pred.set_xticklabels([])
+        ax_pred.set_yticklabels([])
+        
+        # 标题设置
+        ax_pred.set_title(
+            f"{labels[1]}", 
+            fontsize=36,
+            bbox=None
+        )
+        fig_pred.colorbar(im_pred, ax=ax_pred, fraction=0.046, pad=0.04)
+        plt.tight_layout()
+        pred_save_path = f"{base_filename}_rand{i}_predict.png"
+        plt.savefig(pred_save_path, dpi=300, bbox_inches='tight')
+        plt.close(fig_pred)
+        print(f"已保存样本{i} - {labels[1]}图：{pred_save_path}")
 def plot_1d_results(data1, data2, labels, title, filename):
     """
     绘制一维数据的比较图和差值图并保存，标题同时显示整体平均和当前样本的L2相对误差
@@ -302,9 +299,7 @@ def plot_1d_results(data1, data2, labels, title, filename):
     
     # 标题同时显示整体平均和当前样本的L2误差
     plt.suptitle(
-        f"{title}\n"
-        f"overall_L2error: {overall_l2_rel:.6f} | "
-        f"L2error: {current_sample_l2:.6f}"
+        f"{title}"
     )
     
     plt.tight_layout(rect=[0, 0, 1, 0.94])  # 调整布局容纳两行标题

@@ -20,6 +20,84 @@ from Adam import Adam
 torch.set_default_dtype(torch.float32)
 torch.backends.cudnn.benchmark = True
 
+# 全局字体设置（英文）
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+
+def plot_forward_reverse_comparison(forward_gt, forward_pred, reverse_gt, reverse_pred, base_save_path):
+    """
+    随机选择5个不重复样本，每个样本生成正向/反向推理对比图（共10张图）
+    forward_gt: 正向推理真实值 (Tensor/ndarray, 形状: [batch, len])
+    forward_pred: 正向推理预测值 (Tensor/ndarray, 形状需与forward_gt一致)
+    reverse_gt: 反向推理真实值 (Tensor/ndarray, 形状: [batch, len])
+    reverse_pred: 反向推理预测值 (Tensor/ndarray, 形状需与reverse_gt一致)
+    base_save_path: 基础保存路径（如"inference"），生成格式：
+                   "inference_forward_rand1.png" ~ "inference_forward_rand5.png"
+                   "inference_reverse_rand1.png" ~ "inference_reverse_rand5.png"
+    """
+    # 统一转换为numpy数组（适配Tensor/ndarray输入）
+    def to_numpy(tensor):
+        return tensor.cpu().numpy() if isinstance(tensor, torch.Tensor) else tensor
+    
+    # 转换数据格式并确保为浮点型
+    f_gt = to_numpy(forward_gt).astype(np.float32)
+    f_pred = to_numpy(forward_pred).astype(np.float32)
+    r_gt = to_numpy(reverse_gt).astype(np.float32)
+    r_pred = to_numpy(reverse_pred).astype(np.float32)
+    
+    # 1. 随机选择5个不重复样本（校验批次大小）
+    batch_size = f_gt.shape[0]
+    if batch_size < 5:
+        raise ValueError(f"批次大小({batch_size})小于5，无法随机选择5个样本")
+    # 生成0~batch_size-1的随机排列，取前5个作为样本索引
+    rand_indices = np.random.permutation(batch_size)[:5].tolist()
+    print(f"随机选择的样本索引：{rand_indices}")
+    
+    # 生成空间坐标（适配数据长度，所有样本共用同一坐标）
+    x = np.linspace(0, 1, f_gt.shape[1])
+    
+    # 2. 遍历每个随机样本，绘制并保存正向/反向图
+    for idx_idx, sample_idx in enumerate(rand_indices, 1):  # idx_idx: 1~5（样本序号）
+        ###########################################################################
+        # 绘制当前样本的正向推理图
+        ###########################################################################
+        fig_forward, ax_forward = plt.subplots(1, 1, figsize=(10, 6))
+        # 真实值（蓝实线）、预测值（红虚线）
+        ax_forward.plot(x, f_gt[sample_idx], 'b-', linewidth=2.5, label='Ground Truth')
+        ax_forward.plot(x, f_pred[sample_idx], 'r--', linewidth=2.5, label='Predicted')
+        # 标题（含样本序号）、标签、图例（固定在右上角）
+        ax_forward.set_title(f'Forward ', fontsize=36, bbox=None)
+        ax_forward.set_xlabel('Position', fontsize=12)
+        ax_forward.set_ylabel('Value', fontsize=12)
+        ax_forward.legend(fontsize=18, frameon=False, loc='upper right')  # 新增loc参数
+        ax_forward.grid(False)  # 无网格
+        # 保存
+        plt.tight_layout()
+        forward_save_path = f"{base_save_path}_forward_rand{idx_idx}.png"
+        plt.savefig(forward_save_path, dpi=300, bbox_inches='tight')
+        plt.close(fig_forward)
+        print(f"正向推理图（样本{idx_idx}）已保存：{forward_save_path}")
+        
+        ###########################################################################
+        # 绘制当前样本的反向推理图（与正向用同一样本索引）
+        ###########################################################################
+        fig_reverse, ax_reverse = plt.subplots(1, 1, figsize=(10, 6))
+        ax_reverse.plot(x, r_gt[sample_idx], 'b-', linewidth=2.5, label='Ground Truth')
+        ax_reverse.plot(x, r_pred[sample_idx], 'r--', linewidth=2.5, label='Predicted')
+        ax_reverse.set_title(f'Inverse', fontsize=36, bbox=None)
+        ax_reverse.set_xlabel('Position', fontsize=12)
+        ax_reverse.set_ylabel('Value', fontsize=12)
+        ax_reverse.legend(fontsize=18, frameon=False, loc='upper right')  # 新增loc参数
+        ax_reverse.grid(False)  # 无网格
+        # 保存
+        plt.tight_layout()
+        reverse_save_path = f"{base_save_path}_reverse_rand{idx_idx}.png"
+        plt.savefig(reverse_save_path, dpi=300, bbox_inches='tight')
+        plt.close(fig_reverse)
+        print(f"反向推理图（样本{idx_idx}）已保存：{reverse_save_path}")
 
 ################################################################
 # 改进的损失函数
@@ -122,16 +200,16 @@ def main(config):
     # 数据加载与标准化
     ################################################################
     train_dataset = AdvectionDataset(
-        '/data5/store1/dlt/PDEBench/pdebench/data_download/data/1D/Advection/Train/1D_Advection_Sols_beta0.4.hdf5',
+        '/data5/store1/dlt/PDEBench/pdebench/data_download/data/1D_broken/Advection/Train/1D_Advection_Sols_beta0.1.hdf5',
         mode='train',
         target_len=target_len
     )
     test_dataset = AdvectionDataset(
-        '/data5/store1/dlt/PDEBench/pdebench/data_download/data/1D/Advection/Train/1D_Advection_Sols_beta0.4.hdf5',
+        '/data5/store1/dlt/PDEBench/pdebench/data_download/data/1D_broken/Advection/Train/1D_Advection_Sols_beta0.1.hdf5',
         mode='test',
         target_len=target_len
     )
-    
+    # import ipdb; ipdb.set_trace()
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -201,8 +279,8 @@ def main(config):
                 a_ = (a_batch.to(device) - a_mean) / a_std
                 x_ = (x_batch.to(device) - x_mean) / x_std
                 
-                time_options = torch.tensor([0.0, 0.5, 1.0], device=device, dtype=torch.float32)  # 定义可选时间值
-                rand_indices = torch.randint(0, 3, (batch_size, 1), device=device)  # 生成0-2的随机索引
+                time_options = torch.tensor([0.0,  1.0], device=device, dtype=torch.float32)  # 定义可选时间值
+                rand_indices = torch.randint(0, 2, (batch_size, 1), device=device)  # 生成0-2的随机索引
                 t = time_options[rand_indices]  # 根据索引选取时间值（形状：(current_bs, 1)）
                 t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
                 t = t.repeat(1, len(a_[0]))
@@ -327,21 +405,13 @@ def main(config):
         logging.info(f"最终评估 - L2 Relative Error: {final_l2rel:.6f}")
         
         # 绘图（保持原始命名）
-        plot_1d_results(
-            data1=xt_last,
-            data2=x_true,
-            labels=['Predicted', 'Ground Truth'],
-            title=f'Forward Inference (L2 Rel Error: {final_l2rel:.6f})',  # 标题仅L2
-            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_operator_learning_1d.png'
+        plot_forward_reverse_comparison(
+            forward_gt=x_true,          # 正向真实值
+            forward_pred=xt_last,       # 正向预测值
+            reverse_gt=y_true,          # 反向真实值
+            reverse_pred=yt_last,       # 反向预测值
+            base_save_path = f"{save_path}{scorenet_model_class.lower()}_{target_len}",
         )
-        plot_1d_results(
-            data1=yt_last,
-            data2=y_true,
-            labels=['Predicted', 'Ground Truth'],
-            title='Reverse Inference',
-            filename=f'{save_path}{scorenet_model_class.lower()}_{target_len}_reverse_learning_1d.png'
-        )
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
